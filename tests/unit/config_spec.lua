@@ -1,0 +1,114 @@
+local test = require("tests.testlib")
+local config = require("bilingua.config")
+
+-- Preconditions: One caller resolves defaults, mutates its private result, and a
+-- second caller resolves defaults again; another caller enables forbidden MVP
+-- persistence. Prerequisites: Session settings must not share mutable tables and
+-- unsupported persistence must fail explicitly rather than silently falling back.
+-- Verification items: documented defaults are present, results are independent,
+-- and persistence.enabled=true returns E_INVALID_ARGUMENT.
+test.it("resolves isolated defaults and rejects persistent sessions", function()
+  local first = assert(config.resolve({}))
+  test.eq("auto", first.source_language)
+  test.eq("ja", first.target_language)
+  test.eq(700, first.sync.debounce_ms)
+  test.eq(false, first.layout.open_folds)
+  test.eq("codex_app_server", first.translation.backend)
+  first.sync.debounce_ms = 1
+
+  local second = assert(config.resolve({}))
+  test.eq(700, second.sync.debounce_ms)
+
+  local resolved, err = config.resolve({ persistence = { enabled = true } })
+  test.eq(nil, resolved)
+  test.eq("E_INVALID_ARGUMENT", err.code)
+end)
+
+-- Preconditions: Callers provide wrong primitive types or out-of-range values for
+-- documented boolean, timeout, isolation, and display options. Prerequisites: all
+-- documented setup fields are validated before any Session is constructed.
+-- Verification items: every malformed option returns E_INVALID_ARGUMENT and its
+-- public error message identifies the exact configuration path.
+test.it("validates every documented scalar configuration category", function()
+  local cases = {
+    { { source_language = "" }, "source_language" },
+    { { layout = { follow_cursor = "yes" } }, "layout.follow_cursor" },
+    { { layout = { open_folds = "yes" } }, "layout.open_folds" },
+    { { sync = { automatic = 1 } }, "sync.automatic" },
+    { { sync = { on_insert_leave = "yes" } }, "sync.on_insert_leave" },
+    { { sync = { retry = { max_delay_ms = 499 } } }, "sync.retry.max_delay_ms" },
+    { { stop = { sync_pending = "yes" } }, "stop.sync_pending" },
+    { { stop = { timeout_ms = 0 } }, "stop.timeout_ms" },
+    { { documents = { fallback_to_plaintext = "yes" } }, "documents.fallback_to_plaintext" },
+    { { translation = { backend = "" } }, "translation.backend" },
+    {
+      { translation = { backend_options = { require_ephemeral = "yes" } } },
+      "translation.backend_options.require_ephemeral",
+    },
+    { { ui = { signs = "yes" } }, "ui.signs" },
+    { { debug = { enabled = "yes" } }, "debug.enabled" },
+  }
+
+  for _, case in ipairs(cases) do
+    local resolved, err = config.resolve(case[1])
+    test.eq(nil, resolved)
+    test.eq("E_INVALID_ARGUMENT", err.code)
+    assert(err.message:find(case[2], 1, true), err.message)
+  end
+end)
+
+-- Preconditions: A filetype alias maps an alternate name to an existing exact
+-- route. Prerequisites: aliases are string-to-string route references and must
+-- never silently point at missing routes. Verification items: valid aliases survive
+-- resolution, while a dangling alias is rejected with its precise option path.
+test.it("validates filetype aliases against configured routes", function()
+  local resolved = assert(config.resolve({
+    documents = { aliases = { md = "markdown" } },
+  }))
+  test.eq("markdown", resolved.documents.aliases.md)
+
+  local invalid, err = config.resolve({
+    documents = { aliases = { md = "missing" } },
+  })
+  test.eq(nil, invalid)
+  test.eq("E_INVALID_ARGUMENT", err.code)
+  assert(err.message:find("documents.aliases.md", 1, true), err.message)
+end)
+
+-- Preconditions: A caller replaces the default two-part Codex command with one
+-- executable, then supplies an empty command in a separate resolution request.
+-- Prerequisites: Array-valued options are atomic values rather than numeric-keyed
+-- maps, and invalid replacements must not inherit omitted default elements.
+-- Verification items: the one-element array is preserved exactly and the empty
+-- array fails validation with E_INVALID_ARGUMENT.
+test.it("replaces command arrays without retaining default elements", function()
+  local resolved = assert(config.resolve({
+    translation = { backend_options = { command = { "custom-server" } } },
+  }))
+  test.eq({ "custom-server" }, resolved.translation.backend_options.command)
+
+  local invalid, err = config.resolve({
+    translation = { backend_options = { command = {} } },
+  })
+  test.eq(nil, invalid)
+  test.eq("E_INVALID_ARGUMENT", err.code)
+end)
+
+-- Preconditions: A caller supplies one valid custom Lua pattern, while separate
+-- callers supply a malformed pattern and a non-list table. Prerequisites: custom
+-- protected-token patterns are atomic ordered configuration and are compiled only
+-- after setup validation. Verification items: the valid list survives exactly,
+-- and both malformed shapes fail with E_INVALID_ARGUMENT naming the option path.
+test.it("validates custom protected-token patterns as an atomic list", function()
+  local resolved = assert(config.resolve({
+    documents = { protected_patterns = { "TOKEN:%d+" } },
+  }))
+  test.eq({ "TOKEN:%d+" }, resolved.documents.protected_patterns)
+
+  for _, patterns in ipairs({ { "[" }, { named = "TOKEN:%d+" } }) do
+    local invalid, err = config.resolve({ documents = { protected_patterns = patterns } })
+    test.eq(nil, invalid)
+    test.eq("E_INVALID_ARGUMENT", err.code)
+    assert(err.message:find("documents.protected_patterns", 1, true), err.message)
+  end
+end)

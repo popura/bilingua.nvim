@@ -1,0 +1,826 @@
+*bilingua.txt*	Bilingual source/target editing with Codex app-server
+
+==============================================================================
+Bilingua.nvim						*bilingua*
+
+Bilingua.nvim は、原文 (source) と日本語訳 (target) を並べ、双方の編集を
+mapping group 単位で同期する非永続の Neovim plugin です。
+
+標準 backend は Codex app-server です。Session の開始時に target scratch
+buffer を作成し、停止時に plugin 所有の buffer、window、extmark、autocmd、
+timer、mapping graph、task、backend process を解放します。
+
+CONTENTS						*bilingua-contents*
+
+  1. Requirements		|bilingua-requirements|
+  2. Setup			|bilingua-setup|
+  3. Quick start		|bilingua-quick-start|
+  4. Commands			|bilingua-commands|
+  5. Mappings			|bilingua-mappings|
+  6. Configuration		|bilingua-configuration|
+  7. Document handling		|bilingua-documents|
+  8. Synchronization		|bilingua-synchronization|
+  9. Status and recovery	|bilingua-status|
+ 10. Lua API			|bilingua-api|
+ 11. User events		|bilingua-events|
+ 12. Extension registry		|bilingua-registry|
+ 13. Errors			|bilingua-errors|
+ 14. Security and privacy	|bilingua-security|
+ 15. Non-persistence		|bilingua-non-persistence|
+ 16. Compatibility/testing	|bilingua-development|
+
+==============================================================================
+1. Requirements					*bilingua-requirements*
+
+- Neovim 0.10 以上。
+- Codex CLI 0.146.0 以上。
+- Codex CLI で利用可能な認証と text input 対応 model。
+- 外部 Lua runtime dependency はありません。
+
+0.146.0 は本 project が app-server の生成 schema を確認した最低版です。
+protocol は Codex の版に依存するため、更新時は
+|bilingua-codex-compatibility| の検査を実行してください。
+
+準備状況の確認例: >
+
+  codex --version
+  codex login
+  codex app-server --help
+<
+
+==============================================================================
+2. Setup						*bilingua-setup*
+
+runtimepath に plugin を追加した後、init.lua で次を実行します。 >
+
+  require("bilingua").setup()
+<
+
+setup() は省略できます。省略時も既定設定で command が使えます。設定例と
+全項目は |bilingua-configuration| を参照してください。
+
+source として使用できるのは、非空の file path を持つ loaded、modifiable、
+non-binary の通常 buffer です。未保存の無名 buffer、特殊 buftype、read-only
+buffer は E_INVALID_SOURCE_BUFFER です。
+
+==============================================================================
+3. Quick start					*bilingua-quick-start*
+
+1. 編集可能な原文 buffer を開きます。
+2. :BilinguaStart または <leader>bs を実行します。
+3. source または target を編集します。
+4. 自動同期を待つか、:BilinguaSync を実行します。
+5. conflict では正しい側を確認し、:BilinguaUseSource または
+   :BilinguaUseJapanese を実行します。
+6. source を残して終了するには :BilinguaStop を実行します。
+
+source language を固定する例: >
+
+  :BilinguaStart en
+<
+
+既定 target language は ja です。target は
+"bilingua://ja/{buffer}/{name}" という名前の scratch buffer であり、通常の
+file として保存されません。
+
+==============================================================================
+4. Commands						*bilingua-commands*
+
+							*:BilinguaStart*
+:BilinguaStart [source-language]
+	現在 buffer で Session を開始します。引数省略時は setup() の
+	source_language を使います。処理中に編集された場合、debounce 後の
+	最新 source から初期翻訳を再開します。
+
+:BilinguaStart! [source-language]
+	既存 Session を force stop して、同じ source buffer で新しい
+	Session を開始します。未同期 target edit と conflict は破棄されます。
+
+							*:BilinguaToggle*
+:BilinguaToggle
+	source と target の focus を切り替えます。target window が閉じている
+	場合は再表示します。
+
+							*:BilinguaSync*
+:BilinguaSync
+	cursor 下の mapping group を即時同期します。source 側なら target へ、
+	target 側なら source へ同期します。
+
+							*:BilinguaSyncAll*
+:BilinguaSyncAll
+	現在 Session の conflict 以外の dirty／invalid group を再評価して
+	同期します。同時実行数は sync.max_concurrency に従います。
+
+							*:BilinguaUseSource*
+:BilinguaUseSource
+	cursor 下の conflict で source を正とし、target を更新します。
+	conflict でない group には使用できません。
+
+							*:BilinguaUseJapanese*
+:BilinguaUseJapanese
+	cursor 下の conflict で target を正とし、source を更新します。
+	conflict でない group には使用できません。
+
+							*:BilinguaNext*
+:BilinguaNext
+	次の mapping group へ移動します。
+
+							*:BilinguaPrev*
+:BilinguaPrev
+	前の mapping group へ移動します。
+
+							*:BilinguaStatus*
+:BilinguaStatus
+	現在 Session の本文を含まない状態のコピーを vim.notify() で表示します。
+	詳細は |bilingua-status| を参照してください。
+
+							*:BilinguaRetry*
+:BilinguaRetry
+	Session があれば cursor 下の group を最新 revision で再試行します。
+	開始に失敗した直後で Session がなければ、現在 source buffer に保存した
+	options の copy から新しい Session を構築して開始を再試行します。
+	document content や失敗 Session 自体は retry 用に保持しません。
+
+						*:BilinguaRestartBackend*
+:BilinguaRestartBackend
+	現在の source/target snapshot と mapping graph を保ったまま
+	TranslationService/backend を閉じ、新しい instance を開きます。
+	成功すると health を healthy にし、自動同期の pause を解除します。
+
+							*:BilinguaStop*
+:BilinguaStop
+	Session だけを正常停止し、source buffer は開いたまま残します。
+	未同期 target edit は stop.sync_pending に従って source へ同期します。
+	conflict、invalid、backend error、timeout が残れば停止を中止します。
+	source-only edit は source buffer 自体に残るため、終了時の翻訳 task は
+	作りません。
+
+:BilinguaStop!
+	active task を cancel し、未同期 target edit と conflict を破棄して
+	Session を force stop します。source へ適用済みの edit は戻しません。
+
+							*:BilinguaQuit*
+:BilinguaQuit
+	:BilinguaStop 相当の正常停止後、source buffer を Neovim 標準の
+	confirm bdelete 相当で閉じます。保存、破棄、cancel の判断は Neovim
+	に委ねます。
+
+:BilinguaQuit!
+	:BilinguaStop! の後、source buffer も force delete します。未保存の
+	source edit を失います。既定 mapping はありません。
+
+==============================================================================
+5. Mappings						*bilingua-mappings*
+
+mappings.start だけが global です。それ以外は Session の source/target
+buffer-local で、Session 停止時に削除されます。
+
+  <leader>bs	<BilinguaStart>
+  <leader>bb	<BilinguaToggle>
+  <leader>by	<BilinguaSync>
+  <leader>ba	<BilinguaSyncAll>
+  <leader>bo	<BilinguaUseSource>
+  <leader>bj	<BilinguaUseJapanese>
+  ]b		<BilinguaNext>
+  [b		<BilinguaPrev>
+  <leader>bq	<BilinguaStop>
+  <leader>bQ	<BilinguaQuit>
+
+実際の右辺は次の <Plug> mapping です。
+
+  <Plug>(BilinguaStart)			*<Plug>(BilinguaStart)*
+  <Plug>(BilinguaToggle)		*<Plug>(BilinguaToggle)*
+  <Plug>(BilinguaSync)			*<Plug>(BilinguaSync)*
+  <Plug>(BilinguaSyncAll)		*<Plug>(BilinguaSyncAll)*
+  <Plug>(BilinguaUseSource)		*<Plug>(BilinguaUseSource)*
+  <Plug>(BilinguaUseJapanese)		*<Plug>(BilinguaUseJapanese)*
+  <Plug>(BilinguaNext)			*<Plug>(BilinguaNext)*
+  <Plug>(BilinguaPrev)			*<Plug>(BilinguaPrev)*
+  <Plug>(BilinguaStatus)		*<Plug>(BilinguaStatus)*
+  <Plug>(BilinguaRetry)			*<Plug>(BilinguaRetry)*
+  <Plug>(BilinguaRestartBackend)	*<Plug>(BilinguaRestartBackend)*
+  <Plug>(BilinguaStop)			*<Plug>(BilinguaStop)*
+  <Plug>(BilinguaQuit)			*<Plug>(BilinguaQuit)*
+
+Status、Retry、RestartBackend、force Quit には既定 key を割り当てません。
+mappings.enabled=false で既定 mapping をすべて無効にできます。各 mapping
+には string または false を指定できます。
+
+==============================================================================
+6. Configuration				*bilingua-configuration*
+
+既定設定: >
+
+  require("bilingua").setup({
+    source_language = "auto",
+    target_language = "ja",
+
+    mappings = {
+      enabled = true,
+      start = "<leader>bs",
+      toggle = "<leader>bb",
+      sync = "<leader>by",
+      sync_all = "<leader>ba",
+      use_source = "<leader>bo",
+      use_japanese = "<leader>bj",
+      next = "]b",
+      prev = "[b",
+      stop = "<leader>bq",
+      quit = "<leader>bQ",
+    },
+
+    layout = {
+      direction = "vertical",
+      target_position = "right",
+      size = 0.5,
+      follow_cursor = true,
+      follow_debounce_ms = 50,
+      open_folds = false,
+    },
+
+    sync = {
+      automatic = true,
+      debounce_ms = 700,
+      on_insert_leave = true,
+      max_concurrency = 1,
+      context_groups = 1,
+      structural_changes = "auto_safe",
+      conflict_policy = "manual",
+      retry = {
+        max_attempts = 3,
+        initial_delay_ms = 500,
+        max_delay_ms = 3000,
+      },
+    },
+
+    stop = {
+      sync_pending = true,
+      timeout_ms = 120000,
+    },
+
+    persistence = {
+      enabled = false,
+    },
+
+    limits = {
+      max_document_bytes = 2 * 1024 * 1024,
+      max_units = 2000,
+      max_task_input_chars = 24000,
+      max_task_output_chars = 24000,
+      initial_batch_chars = 12000,
+      initial_batch_units = 32,
+    },
+
+    documents = {
+      fallback_to_plaintext = true,
+      aliases = {},
+      protected_patterns = {},
+      routes = {
+        markdown = {
+          adapter = "markdown",
+          tracker = "hybrid",
+          aligner = "generated_id",
+        },
+        text = {
+          adapter = "plaintext",
+          tracker = "hybrid",
+          aligner = "generated_id",
+        },
+      },
+    },
+
+    translation = {
+      service = "default",
+      backend = "codex_app_server",
+      initial_codec = "initial_translation_json_v1",
+      patch_codec = "semantic_patch_json_v1",
+      timeout_ms = 120000,
+      backend_options = {
+        command = { "codex", "app-server" },
+        model = nil,
+        reasoning_effort = nil,
+        require_ephemeral = true,
+        strict_isolation = true,
+        reject_external_instruction_sources = true,
+        include_platform_default_reads = false,
+        experimental_api = false,
+        request_timeout_ms = 10000,
+        shutdown_timeout_ms = 500,
+      },
+    },
+
+    ui = {
+      signs = true,
+      virtual_text = true,
+      notify_backend = true,
+      show_progress = true,
+    },
+
+    debug = {
+      enabled = false,
+      log_payloads = false,
+      ring_size = 200,
+    },
+  })
+<
+
+						*bilingua-config-language*
+source_language
+	非空 string。既定 "auto"。start({source_language=...}) または
+	:BilinguaStart の引数で Session ごとに上書きできます。
+target_language
+	非空 string。既定 "ja"。
+
+						*bilingua-config-mappings*
+mappings.enabled
+	boolean。既定 true。
+mappings.start/toggle/sync/sync_all/use_source/use_japanese/next/prev/stop/quit
+	string または false。値は |bilingua-mappings| を参照してください。
+
+						*bilingua-config-layout*
+layout.direction
+	"vertical" または "horizontal"。
+layout.target_position
+	"right"、"left"、"above"、"below"。vertical では right/left、
+	horizontal では above/below を使用してください。
+layout.size
+	0 より大きく 1 より小さい比率、または正の整数。
+layout.follow_cursor
+	true のとき、反対側 window が見えていれば対応 group を表示します。
+	focus は奪いません。
+layout.follow_debounce_ms
+	0 以上の整数。
+layout.open_folds
+	true なら cursor follow の移動先にある fold を開きます。
+	既定 false。focus と移動先 window の scroll view は保持します。
+
+						*bilingua-config-sync*
+sync.automatic
+	変更後に task を自動作成するか。既定 true。
+sync.debounce_ms
+	変更をまとめる待機時間。0 以上の整数。
+sync.on_insert_leave
+	true のとき InsertLeave で待機中の自動同期を flush します。
+sync.max_concurrency
+	TranslationService へ同時 submit する異なる group 数。正の整数。
+sync.context_groups
+	task に付ける前後の bilingual group 数。replacement scope は広げません。
+sync.structural_changes
+	"auto_safe" は安全に対応できる追加・削除・分割・結合を同期します。
+	"manual" は structural edit を conflict にし、"disabled" は invalid に
+	します。
+sync.conflict_policy
+	初期版では "manual" だけを受理します。
+sync.retry.max_attempts
+	retryable backend error の最大試行数。正の整数。
+sync.retry.initial_delay_ms / sync.retry.max_delay_ms
+	bounded exponential backoff の初期／最大 delay。0 以上の整数で、
+	maximum は initial 以上でなければなりません。
+
+						*bilingua-config-stop*
+stop.sync_pending
+	true なら正常停止時に dirty_target を source へ同期します。false で
+	dirty_target が残る場合、正常停止は失敗します。
+stop.timeout_ms
+	正常停止の最大待機時間。正の整数。
+
+						*bilingua-config-persistence*
+persistence.enabled
+	初期版では false のみ。true は E_INVALID_ARGUMENT です。
+
+						*bilingua-config-limits*
+limits.max_document_bytes
+	parse 前の document byte 上限。
+limits.max_units
+	parse 後の unit 数上限。
+limits.max_task_input_chars / max_task_output_chars
+	一つの translation task の入力／出力文字数上限。
+limits.initial_batch_chars / initial_batch_units
+	初期翻訳 batch の最大文字数／unit 数。
+	単一 unit が文字数上限を超える場合は分割も送信もせず、
+	E_DOCUMENT_TOO_LARGE で開始を中止します。
+	すべて正の整数です。
+
+						*bilingua-config-documents*
+documents.fallback_to_plaintext
+	一致する route がない filetype を plaintext として扱うか。
+documents.aliases
+	alias filetype から documents.routes の key への table。
+documents.protected_patterns
+	追加で保護する有効な Lua pattern の連続した string list。空 list を含む
+	Session ごとの値は global list を要素単位で merge せず置き換えます。
+documents.routes
+	filetype ごとの {adapter, tracker, aligner}。完全一致、alias の順で
+	解決します。各 component は registry に登録済みである必要があります。
+
+						*bilingua-config-translation*
+translation.service
+	TranslationService factory ID。
+translation.backend
+	InferenceBackend factory ID。既定 "codex_app_server"。
+translation.initial_codec / translation.patch_codec
+	初期翻訳／incremental semantic patch の TaskCodec factory ID。
+translation.timeout_ms
+	turn／task timeout。正の整数。
+translation.backend_options.command
+	non-empty string の argv list。shell 文字列ではありません。
+translation.backend_options.model
+	nil なら model/list の既定 text model、非空 string ならその model。
+translation.backend_options.reasoning_effort
+	nil なら model 既定値、または非空 string。
+translation.backend_options.require_ephemeral
+	true なら thread.ephemeral=true の確認を必須にします。
+translation.backend_options.strict_isolation
+	true なら restricted read-only sandbox と isolated cwd を使います。
+translation.backend_options.reject_external_instruction_sources
+	true なら isolated cwd 外の instructionSources を document 送信前に
+	拒否します。
+translation.backend_options.include_platform_default_reads
+	platform default readable roots を含めるか。strict_isolation=true と
+	同時には指定できません。
+translation.backend_options.experimental_api
+	initialize capability の experimentalApi。既定 false。
+translation.backend_options.request_timeout_ms
+	initialize/model/thread/turn start RPC の timeout。
+translation.backend_options.shutdown_timeout_ms
+	backend shutdown 後に process を強制終了するまでの待機時間。
+
+						*bilingua-config-ui*
+ui.signs / ui.virtual_text
+	mapping group state の sign／行末 virtual text を表示するか。
+ui.notify_backend
+	true なら BilinguaError の実行時 backend error を固定文と正規化 code で
+	vim.notify() します。同じ Session／code は 1 秒間、重複表示しません。
+	false はこの通知だけを無効化し、command error 表示には影響しません。
+ui.show_progress
+	true なら初期翻訳の完了 batch 数を target 先頭行の
+	"Translating completed/total…" virtual text に表示します。開始完了、
+	失敗、再開始、停止時に消去します。false はこの初期進捗だけを
+	無効にします。group 状態表示は ui.signs/ui.virtual_text が制御します。
+
+						*bilingua-config-debug*
+debug.enabled
+	初期版では追加の payload 診断を有効にしません。
+debug.log_payloads
+	初期版では false のみ。true は E_INVALID_ARGUMENT です。
+debug.ring_size
+	backend stderr の in-memory ring buffer 最大件数。正の整数。
+
+setup() は型・値域を検証します。未知の key は typo 検出のため警告します。
+documents.routes、documents.aliases、translation.backend_options は
+extension 用の動的 key を受け入れます。
+
+==============================================================================
+7. Document handling					*bilingua-documents*
+
+						*bilingua-plaintext*
+Plaintext adapter は空行で区切られた paragraph を unit とします。CRLF/LF と
+最終改行の有無を保持します。各 unit 内の inline code、URL、link destination、
+reference label、HTML tag、template、printf placeholder、inline math を
+protected token として扱います。
+
+						*bilingua-markdown*
+Markdown route は、利用可能なら Neovim の Markdown Tree-sitter parser と
+queries/markdown/bilingua.scm を解析・検証に使用します。parser または query
+が利用できない場合、documents.fallback_to_plaintext=true なら警告して
+Plaintext adapter を使い、false なら E_PARSE で Session 開始を中止します。
+Bilingua の構文 template 抽出は完全な CommonMark 実装ではありません。
+
+翻訳対象:
+- ATX/Setext heading。
+- paragraph。
+- ordered/unordered list item。
+- blockquote paragraph。
+
+opaque unit として翻訳せず mirror する構造:
+- YAML/TOML style front matter。
+- fenced/indented code。
+- $$ math block。
+- table。
+- HTML block/comment。
+- thematic break。
+- reference definition。
+- image だけの行。
+
+opaque unit は raw text が両側で一致するように同期します。未閉鎖の opaque
+block、構造を安全に維持できない edit、protected token 不一致は適用しません。
+
+						*bilingua-protected-tokens*
+protected token は model へ placeholder として渡し、返却時に個数・identity・
+重複を完全一致で検証してから元 literal を復元します。文書中の命令は data
+であり、system/developer instruction には連結しません。
+documents.protected_patterns の各 Lua pattern に一致した literal も同じ方法で
+保護します。
+
+==============================================================================
+8. Synchronization				*bilingua-synchronization*
+
+mapping group は source unit 群、target unit 群、baseline triple、state を
+保持します。1 対 1 だけでなく split/merge を表現できます。
+
+state:
+  clean				baseline と一致
+  dirty_source			source に未同期 edit
+  dirty_target			target に未同期 edit
+  syncing_source_to_target	source から target へ処理中
+  syncing_target_to_source	target から source へ処理中
+  conflict			両 side edit または対応が曖昧
+  invalid			parse/result/apply 検証に失敗
+
+表示記号:
+  ✓ clean	S dirty_source	J dirty_target
+  … syncing	! conflict		× invalid
+
+同じ group が再編集されると active task の cancel を要求します。cancel の成否
+だけには依存せず、task revision と destination document version を適用直前に
+再検証します。stale result は適用せず、最新 revision を再同期します。
+
+programmatic edit は Editor の apply guard で user edit と区別します。一つの
+同期適用は可能な範囲で一つの undo step にまとめます。
+
+conflict は自動 merge しません。|:BilinguaUseSource| または
+|:BilinguaUseJapanese| で方向を明示してください。
+
+==============================================================================
+9. Status and recovery					*bilingua-status*
+
+|:BilinguaStatus| は次を表示します。
+
+- Session state と health。
+- source path/buffer、target buffer。
+- source/target language。
+- document adapter、tracker、aligner。
+- backend と解決済み model。
+- state ごとの group 数。
+- active task 数。
+- effective automatic sync state: enabled、disabled、paused。
+
+health:
+  starting	Session/backend の初期化中
+  healthy	同期可能
+  degraded	error 後で手動操作または復旧が必要
+  stopping	停止処理中
+  disposed	plugin 所有 resource を解放済み
+
+backend failure、protocol/auth/isolation error、tool attempt、invalid output では
+health が degraded になり、自動同期を pause します。個別 group は
+|:BilinguaRetry|、backend 全体は |:BilinguaRestartBackend| で復旧します。
+restart 成功時は document state を保持し、pause を解除します。
+
+==============================================================================
+10. Lua API						*bilingua-api*
+
+公開 module: >
+
+  local bilingua = require("bilingua")
+
+  bilingua.setup(opts)
+  bilingua.start(opts, callback)
+  bilingua.toggle()
+  bilingua.sync_current()
+  bilingua.sync_all()
+  bilingua.use_source()
+  bilingua.use_japanese()
+  bilingua.next_group()
+  bilingua.prev_group()
+  bilingua.retry_current(callback)
+  bilingua.restart_backend(callback)
+  bilingua.stop({ force = false }, callback)
+  bilingua.quit({ force = false }, callback)
+  bilingua.status()
+<
+
+start options は setup options を Session 単位で上書きします。top-level
+backend は translation.backend の short form です。 >
+
+  require("bilingua").start({
+    source_language = "fr",
+    target_language = "ja",
+    backend = "codex_app_server",
+  }, function(status, err)
+    if not status then
+      vim.notify(err.message, vim.log.levels.ERROR)
+    end
+  end)
+<
+
+start、retry_current、restart_backend、stop、quit は callback で非同期完了を
+通知できます。開始受付の boolean と即時 error も返します。
+
+status() は内部 Session table と共有されない状態のコピーを返します。本文、
+prompt、model response、認証情報を含みません。主な field は session_id、
+state、health、source_buf、source_path、target_buf、languages、component ID、
+backend/model、groups、active_tasks、automatic_sync、
+automatic_sync_configured、automatic_sync_paused です。
+
+==============================================================================
+11. User events					*bilingua-events*
+
+次の User autocmd event を発火します。
+
+  BilinguaSessionStarted
+  BilinguaSessionStopped
+  BilinguaSyncStarted
+  BilinguaSyncCompleted
+  BilinguaConflict
+  BilinguaError
+
+例: >
+
+  vim.api.nvim_create_autocmd("User", {
+    pattern = "BilinguaError",
+    callback = function(args)
+      vim.print(args.data.error_code)
+    end,
+  })
+<
+
+data に含まれ得る field は session_id、group_id、task_id、state、
+error_code だけです。document content、prompt、response、path は含みません。
+
+==============================================================================
+12. Extension registry					*bilingua-registry*
+
+extension API version は 1 です。 >
+
+  local registry = require("bilingua.registry")
+
+  registry.register_document_adapter("my_adapter", factory)
+  registry.register_unit_tracker("my_tracker", factory)
+  registry.register_aligner("my_aligner", factory)
+  registry.register_translation_backend("my_backend", factory)
+  registry.register_task_codec("my_codec", factory)
+  registry.register_translation_service("my_service", factory)
+<
+
+factory は (config, session_context) を受け、Session 専用 instance を返します。
+同名登録は E_INVALID_ARGUMENT です。明示的な置換だけ
+{ replace = true } を指定します。instance.api_version は 1 で、SessionFactory
+が Port method を開始前に contract-check します。
+
+==============================================================================
+13. Errors						*bilingua-errors*
+
+error は次の正規化 table です。 >
+
+  {
+    code = "E_BACKEND_TIMEOUT",
+    message = "human-readable message",
+    retryable = true,
+    details = {},
+    cause = nil,
+  }
+<
+
+安定 code:
+
+  E_UNSUPPORTED_NVIM		E_INVALID_ARGUMENT
+  E_INVALID_SOURCE_BUFFER	E_UNSUPPORTED_FILETYPE
+  E_DOCUMENT_TOO_LARGE		E_PARSE
+  E_TRACKING_AMBIGUOUS		E_ALIGNMENT
+  E_CONFLICT			E_STRUCTURE_UNSUPPORTED
+  E_BACKEND_NOT_FOUND		E_BACKEND_INIT
+  E_BACKEND_UNAVAILABLE		E_BACKEND_PROTOCOL
+  E_BACKEND_AUTH		E_BACKEND_RATE_LIMITED
+  E_BACKEND_TIMEOUT		E_BACKEND_CANCELLED
+  E_BACKEND_TOOL_ATTEMPT	E_BACKEND_INSTRUCTION_SOURCE
+  E_EPHEMERAL_REQUIRED		E_TRANSLATION
+  E_INVALID_OUTPUT		E_VALIDATION
+  E_STALE_RESULT		E_APPLY_VERSION_MISMATCH
+  E_APPLY			E_SESSION_STATE
+  E_SESSION_CLOSED		E_INTERNAL
+
+error message、User event、status、実行時 error notification に本文は含めません。
+retryable=true でも retry 回数と backoff は sync.retry の上限に従います。
+
+==============================================================================
+14. Security and privacy				*bilingua-security*
+
+信頼境界 ~
+Bilingua.nvim は source/target を信頼できない document data として扱います。
+文書中の prompt、command、URL、認証情報取得要求を instruction として実行
+しません。TaskCodec は固定 system/developer instruction と JSON document
+data を分離します。
+
+標準 strict isolation ~
+各 translation task で次を行います。
+
+- 空の一時 directory を app-server process、thread、turn の cwd にする。
+- source path、source directory、他の workspace、Neovim buffer handle、
+  Neovim RPC 情報を request/readable root に含めない。
+- ephemeral thread を要求し、thread.ephemeral=true を確認する。
+- thread/start の instructionSources が list であり、すべて isolated cwd 内
+  であることを document data 送信前に確認する。
+- turn/start で restricted read-only sandbox を指定し、strict mode では
+  platform default readable root を含めない。
+- approvalPolicy="never" を指定し、server-initiated approval、permission、
+  elicitation、user-input request を安全に decline/cancel する。
+- commandExecution、fileChange、MCP/dynamic tool、webSearch、imageView、
+  collab/subagent item を検出した task を interrupt し、出力を適用しない。
+- model output は schema、task ID、revision、document structure、
+  protected token、destination version を検証してから Editor だけが適用する。
+
+重要: approvalPolicy="never" は tool-disable option ではありません。model が
+sandbox 内で command を試みる可能性を、この field 単独では排除しません。
+restricted read-only sandbox、isolated cwd、item 検出、prompt は多層防御です
+が、OS level の完全な process-execution 禁止ではありません。より強い保証が
+必要なら、利用者または配布環境が codex app-server process を外部 sandbox
+へ収容してください。
+
+data transfer and retention ~
+Codex app-server は local process ですが、選択 model によって document
+content が外部 OpenAI service へ送信される場合があります。plugin は機密
+情報を自動検出・匿名化しません。送信前に内容と backend を確認してください。
+
+plugin が state を永続化しないことは、Codex、OpenAI、将来登録する HTTP/
+local-model provider が独自に request、log、cache を保持しないことを保証
+しません。provider の privacy/data retention policy は別に確認してください。
+
+credentials and logs ~
+API key を setup table、document、TranslationTask metadata、error、target
+buffer、log に書かないでください。provider 公式認証、環境変数、OS credential
+store を使用してください。
+
+既定診断は ID、component/model、status、error code、size/timing 相当の
+metadata に限定します。payload logging は実装せず、
+debug.log_payloads=true を拒否します。User event にも本文を含めません。
+
+==============================================================================
+15. Non-persistence				*bilingua-non-persistence*
+
+target buffer:
+  buftype=nofile
+  bufhidden=hide
+  buflisted=false
+  swapfile=false
+  undofile=false
+
+plugin は sidecar、target file、mapping cache、SQLite database、target の
+persistent undo、swap/backup、prompt/response transcript、resume file を
+作りません。Codex 用一時 directory は backend close 時に再帰削除します。
+
+normal stop では active work の完了と必要な target-to-source sync を待ち、
+error/conflict が残れば target を維持して停止を中止します。force stop、
+source/target buffer detach、VimLeavePre では待たずに task を cancel し、
+plugin 所有 resource を解放します。
+
+source buffer の swapfile、undofile、backup、writebackup は変更せず、自動保存
+もしません。source の通常 undo/history、Neovim 自身の file、package manager
+が管理する plugin、利用者設定、provider 側保持は非永続性の対象外です。
+
+target window を :close しただけなら bufhidden=hide により Session は残り、
+|:BilinguaToggle| で再表示できます。target buffer 自体の bdelete/bwipeout は
+未同期内容の force disposal に相当します。安全な終了には
+|:BilinguaStop| を使用してください。
+
+==============================================================================
+16. Compatibility and testing				*bilingua-development*
+
+						*bilingua-codex-compatibility*
+Codex app-server schema の確認: >
+
+  sh scripts/check-codex-schema.sh
+<
+
+この script は次を行います。
+
+- mktemp で一時 directory を作る。
+- codex app-server generate-json-schema を実行する。
+- initialize、model/list、thread/start、turn/start、turn/interrupt の schema
+  file を確認する。
+- ephemeral、instructionSources、approvalPolicy、sandbox field を確認する。
+- 終了時に一時 directory を削除する。
+
+通常 test は Codex、認証、network を使わず、fake app-server を使用します。 >
+
+  sh scripts/test.sh
+  stylua --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua
+  luacheck lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua
+  nvim --headless -u NONE -c "helptags doc" -c "qa!"
+<
+
+型・静的検査方針は全 file で共通です。Lua 5.1 構文を使い、単一の
+.luacheckrc で vim だけを global として許可し、個別 file の抑制は
+置きません。extension は api_version=1 と必須 method を SessionFactory
+で runtime contract-check し、同じ contract test を各実装へ適用します。
+
+
+既定上限に近い 2,000 unit の Plaintext/Markdown parse と Hybrid Tracker の
+benchmark: >
+
+  sh scripts/benchmark.sh
+<
+
+結果は Neovim 版、unit 数、byte 数、反復数と min/median/max を表示します。
+機種差が大きいため合否閾値は設けません。短い確認では環境変数
+BILINGUA_BENCHMARK_UNITS、BILINGUA_BENCHMARK_ITERATIONS、
+BILINGUA_BENCHMARK_PAYLOAD_BYTES を小さくできます。
+
+CI は Neovim 0.10.4、stable、allowed-failure の nightly を対象にします。
+format、lint、unit/contract/integration、fake app-server、25 回の resource
+cleanup stress test を実行します。最新 Codex schema は週次・手動で確認
+します。live Codex translation test は認証、model availability、network に
+依存するため通常 CI では実行しません。
+
+==============================================================================
+vim:tw=78:ts=8:noet:ft=help:norl:

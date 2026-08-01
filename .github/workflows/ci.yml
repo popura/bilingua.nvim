@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    if: github.event_name != 'schedule'
+    name: Format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: StyLua
+        uses: JohnnyMorganz/stylua-action@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: 2.5.2
+          args: --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua
+      - name: Luacheck
+        uses: lunarmodules/luacheck@v1
+        with:
+          args: lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua
+
+  test:
+    if: github.event_name != 'schedule'
+    name: Neovim ${{ matrix.neovim }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        neovim:
+          - v0.10.4
+          - stable
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.neovim }}
+      - name: Unit, contract, integration, fake app-server, and cleanup stress tests
+        run: sh scripts/test.sh
+      - name: Generate Vim help tags
+        run: nvim --headless -u NONE -c "helptags doc" -c "qa!"
+
+  nightly:
+    if: github.event_name != 'schedule'
+    name: Neovim nightly (allowed failure)
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Neovim nightly
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: nightly
+      - name: Run complete test suite
+        run: sh scripts/test.sh
+
+  codex-schema:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Latest Codex app-server schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install latest Codex CLI
+        run: npm install --global @openai/codex@latest
+      - name: Record Codex version
+        run: codex --version
+      - name: Verify required app-server schema
+        run: sh scripts/check-codex-schema.sh
