@@ -21,7 +21,7 @@ local function schema()
   return {
     type = "object",
     properties = {
-      schema_version = { const = 1 },
+      schema_version = { type = "integer", const = 1 },
       task_id = { type = "string" },
       translations = {
         type = "array",

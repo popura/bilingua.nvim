@@ -65,6 +65,22 @@ local function task()
   }
 end
 
+-- Preconditions: A valid semantic patch task is encoded for a backend that
+-- supports system instructions and structured output. Prerequisites: The
+-- response schema is sent directly to the provider rather than embedded as text.
+-- Verification items: schema_version declares both its integer type and v1 const.
+test.it("encodes a provider-compatible structured semantic patch schema", function()
+  local codec = patch_codec.new({ max_output_chars = 100, supported_kinds = { paragraph = true } })
+  local request, encode_error = codec:encode(task(), {
+    structured_output = true,
+    system_instructions = true,
+  })
+
+  test.eq(nil, encode_error)
+  test.eq("integer", request.response_schema.properties.schema_version.type)
+  test.eq(1, request.response_schema.properties.schema_version.const)
+end)
+
 -- Preconditions: A target-to-source task contains the baseline triple and a
 -- protected token. Prerequisites: The backend lacks structured output and system
 -- instruction roles. Verification items: the safe system instruction and schema

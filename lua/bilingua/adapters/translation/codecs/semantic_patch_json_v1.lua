@@ -24,7 +24,7 @@ local function schema()
   return {
     type = "object",
     properties = {
-      schema_version = { const = 1 },
+      schema_version = { type = "integer", const = 1 },
       task_id = { type = "string" },
       destination_side = { type = "string", enum = { "source", "target" } },
       replacement_units = {
