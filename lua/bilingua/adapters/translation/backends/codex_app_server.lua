@@ -32,6 +32,31 @@ local function copy_list(values)
   return copy
 end
 
+local function copy_string_list(values, option_name)
+  if values == nil then
+    return {}
+  end
+  if type(values) ~= "table" then
+    error(("Codex backend option %s must be a string list"):format(option_name), 3)
+  end
+  local count = 0
+  for key in pairs(values) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+      error(("Codex backend option %s must be a string list"):format(option_name), 3)
+    end
+    count = count + 1
+  end
+  local copy = {}
+  for index = 1, count do
+    local value = values[index]
+    if type(value) ~= "string" or value == "" then
+      error(("Codex backend option %s must contain non-empty strings"):format(option_name), 3)
+    end
+    copy[index] = value
+  end
+  return copy
+end
+
 local function is_list(value)
   if type(value) ~= "table" then
     return false
@@ -67,15 +92,34 @@ local function safe_error(value, fallback_code, fallback_message)
   return backend_error(fallback_code, fallback_message, false)
 end
 
+local function isolated_permission_profile_name(path)
+  local trimmed = path:gsub("[\\/]+$", "")
+  local suffix = trimmed:match("([^\\/]+)$") or "workspace"
+  suffix = suffix:gsub("[^%w_]", "_")
+  if suffix == "" then
+    suffix = "workspace"
+  end
+  return "bilingua_nvim_isolated_" .. suffix
+end
+
 function Backend.new(options)
   local resolved = options or {}
   local strict_isolation = resolved.strict_isolation ~= false
   local include_platform_defaults = resolved.include_platform_default_reads == true
+  local experimental_api = resolved.experimental_api ~= false
+  local allowed_instruction_sources =
+    copy_string_list(resolved.allowed_instruction_sources, "allowed_instruction_sources")
   local configuration_error
   if strict_isolation and include_platform_defaults then
     configuration_error = backend_error(
       errors.codes.BACKEND_INIT,
       "Strict isolation cannot include platform default readable roots",
+      false
+    )
+  elseif strict_isolation and not experimental_api then
+    configuration_error = backend_error(
+      errors.codes.BACKEND_INIT,
+      "Strict isolation requires the Codex experimental API",
       false
     )
   end
@@ -100,8 +144,9 @@ function Backend.new(options)
     require_ephemeral = resolved.require_ephemeral ~= false,
     strict_isolation = strict_isolation,
     reject_external_instruction_sources = resolved.reject_external_instruction_sources ~= false,
+    allowed_instruction_sources = allowed_instruction_sources,
     include_platform_default_reads = include_platform_defaults,
-    experimental_api = resolved.experimental_api == true,
+    experimental_api = experimental_api,
     request_timeout_ms = resolved.request_timeout_ms or 10000,
     turn_timeout_ms = resolved.turn_timeout_ms or resolved.timeout_ms or 120000,
     shutdown_timeout_ms = resolved.shutdown_timeout_ms or 500,
@@ -655,22 +700,45 @@ function Backend:open(callback)
   self:start_handshake()
 end
 
-function Backend:canonical_path_is_inside(path)
+function Backend:canonical_path(path)
   if type(path) ~= "string" or path == "" then
-    return false
+    return nil
   end
   local ok, resolved = pcall(self.realpath, path)
   if not ok or type(resolved) ~= "string" or resolved == "" then
+    return nil
+  end
+  local canonical = resolved:gsub("[\\/]+$", "")
+  if package.config:sub(1, 1) == "\\" then
+    canonical = canonical:lower()
+  end
+  return canonical
+end
+
+function Backend:canonical_path_is_inside(path)
+  local root = self:canonical_path(self.isolated_temp_dir)
+  local candidate = self:canonical_path(path)
+  if not root or not candidate then
     return false
   end
   local separator = package.config:sub(1, 1)
-  local root = self.isolated_temp_dir:gsub("[\\/]+$", "")
-  local candidate = resolved:gsub("[\\/]+$", "")
-  if separator == "\\" then
-    root = root:lower()
-    candidate = candidate:lower()
-  end
   return candidate == root or candidate:sub(1, #root + 1) == root .. separator
+end
+
+function Backend:instruction_source_is_allowed(path)
+  if self:canonical_path_is_inside(path) then
+    return true
+  end
+  local candidate = self:canonical_path(path)
+  if not candidate then
+    return false
+  end
+  for _, allowed_path in ipairs(self.allowed_instruction_sources) do
+    if candidate == self:canonical_path(allowed_path) then
+      return true
+    end
+  end
+  return false
 end
 
 function Backend:finish_job(job, kind, value)
@@ -714,22 +782,19 @@ end
 
 function Backend:start_turn(job)
   local request = job.request
-  local include_defaults = self.strict_isolation and false or self.include_platform_default_reads
   local params = {
     threadId = job.thread_id,
     input = { { type = "text", text = request.user_content } },
     cwd = self.isolated_temp_dir,
     approvalPolicy = "never",
-    sandboxPolicy = {
-      type = "readOnly",
-      access = {
-        type = "restricted",
-        includePlatformDefaults = include_defaults,
-        readableRoots = { self.isolated_temp_dir },
-      },
-    },
     model = self.selected_model_name,
   }
+  if not self.strict_isolation then
+    params.sandboxPolicy = {
+      type = "readOnly",
+      networkAccess = false,
+    }
+  end
   if self.resolved_reasoning_effort then
     params.effort = self.resolved_reasoning_effort
   end
@@ -788,9 +853,29 @@ function Backend:start_thread(job)
     model = self.selected_model_name,
     cwd = self.isolated_temp_dir,
     approvalPolicy = "never",
-    sandbox = "readOnly",
     serviceName = "bilingua_nvim",
   }
+  if self.strict_isolation then
+    local profile_name = isolated_permission_profile_name(self.isolated_temp_dir)
+    params.permissions = profile_name
+    params.runtimeWorkspaceRoots = { self.isolated_temp_dir }
+    params.environments = json.array()
+    params.config = {
+      ["permissions." .. profile_name] = {
+        description = "Bilingua.nvim isolated read-only translation workspace",
+        filesystem = {
+          [":workspace_roots"] = {
+            ["."] = "read",
+          },
+        },
+        network = {
+          enabled = false,
+        },
+      },
+    }
+  else
+    params.sandbox = "read-only"
+  end
   if type(job.request.system_instructions) == "string" then
     params.developerInstructions = job.request.system_instructions
   end
@@ -844,7 +929,7 @@ function Backend:start_thread(job)
         return
       end
       for _, path in ipairs(sources) do
-        if not self:canonical_path_is_inside(path) then
+        if not self:instruction_source_is_allowed(path) then
           self:finish_job(
             job,
             "error",

@@ -297,13 +297,13 @@ mappings.enabled=false で既定 mapping をすべて無効にできます。各
       timeout_ms = 120000,
       backend_options = {
         command = { "codex", "app-server" },
-        model = nil,
-        reasoning_effort = nil,
+        model = "gpt-5.6-luna",
+        reasoning_effort = "max",
         require_ephemeral = true,
         strict_isolation = true,
         reject_external_instruction_sources = true,
         include_platform_default_reads = false,
-        experimental_api = false,
+        experimental_api = true,
         request_timeout_ms = 10000,
         shutdown_timeout_ms = 500,
       },
@@ -425,21 +425,31 @@ translation.timeout_ms
 translation.backend_options.command
 	non-empty string の argv list。shell 文字列ではありません。
 translation.backend_options.model
-	nil なら model/list の既定 text model、非空 string ならその model。
+	使用する text model。既定 "gpt-5.6-luna"。
 translation.backend_options.reasoning_effort
-	nil なら model 既定値、または非空 string。
+	使用する reasoning effort。既定 "max"。推論時間と token 使用量が
+	増える場合があるため、速度を優先する用途では明示的に下げてください。
 translation.backend_options.require_ephemeral
 	true なら thread.ephemeral=true の確認を必須にします。
 translation.backend_options.strict_isolation
-	true なら restricted read-only sandbox と isolated cwd を使います。
+	true なら backend instance ごとの permission profile と isolated cwd を
+	使い、各 task で isolation directory だけを read-only workspace root に
+	します。
+	false は Codex 標準 readOnly sandbox に戻り、directory 外も読み取り
+	可能になるため、通常は変更しないでください。
 translation.backend_options.reject_external_instruction_sources
-	true なら isolated cwd 外の instructionSources を document 送信前に
-	拒否します。
+	true なら instructionSources を document 送信前に検証します。isolated
+	cwd 内、または Bilingua 初期化時に検出した Codex user-level
+	AGENTS.override.md／AGENTS.md と realpath で同一の file だけを許可し、
+	それ以外を拒否します。
 translation.backend_options.include_platform_default_reads
-	platform default readable roots を含めるか。strict_isolation=true と
-	同時には指定できません。
+	旧設定との互換性のための option。true は strict_isolation=true と
+	同時には指定できません。非 strict mode の標準 readOnly sandbox を
+	狭めるものではありません。
 translation.backend_options.experimental_api
-	initialize capability の experimentalApi。既定 false。
+	initialize capability の experimentalApi。既定 true。
+	strict_isolation=true では permission profile API に必要なため、false と
+	同時には指定できません。
 translation.backend_options.request_timeout_ms
 	initialize/model/thread/turn start RPC の timeout。
 translation.backend_options.shutdown_timeout_ms
@@ -703,16 +713,22 @@ Bilingua.nvim は source/target を信頼できない document data として扱
 data を分離します。
 
 標準 strict isolation ~
-各 translation task で次を行います。
+backend instance ごとに隔離資源を作り、各 translation task の ephemeral
+thread で次の制約を適用します。
 
-- 空の一時 directory を app-server process、thread、turn の cwd にする。
+- backend instance ごとに空の一時 directory を作り、app-server process と
+  各 thread／turn の cwd にする。
 - source path、source directory、他の workspace、Neovim buffer handle、
   Neovim RPC 情報を request/readable root に含めない。
 - ephemeral thread を要求し、thread.ephemeral=true を確認する。
-- thread/start の instructionSources が list であり、すべて isolated cwd 内
-  であることを document data 送信前に確認する。
-- turn/start で restricted read-only sandbox を指定し、strict mode では
-  platform default readable root を含めない。
+- thread/start の instructionSources が list であり、各 file が isolated cwd
+  内、または Bilingua 初期化時に検出した Codex user-level
+  AGENTS.override.md／AGENTS.md と realpath で同一であることを document data
+  送信前に確認する。それ以外の instruction source は拒否する。
+- backend instance ごとに推測困難な名前の permission profile を定義し、
+  各 task で isolated cwd だけを read-only workspace root として許可する。
+- network を無効化し、空の environments で local environment access を
+  無効化する。
 - approvalPolicy="never" を指定し、server-initiated approval、permission、
   elicitation、user-input request を安全に decline/cancel する。
 - commandExecution、fileChange、MCP/dynamic tool、webSearch、imageView、
@@ -720,12 +736,15 @@ data を分離します。
 - model output は schema、task ID、revision、document structure、
   protected token、destination version を検証してから Editor だけが適用する。
 
-重要: approvalPolicy="never" は tool-disable option ではありません。model が
-sandbox 内で command を試みる可能性を、この field 単独では排除しません。
-restricted read-only sandbox、isolated cwd、item 検出、prompt は多層防御です
-が、OS level の完全な process-execution 禁止ではありません。より強い保証が
-必要なら、利用者または配布環境が codex app-server process を外部 sandbox
-へ収容してください。
+重要: approvalPolicy="never" 単独は tool-disable option ではありません。
+permission profile、local environment access 無効化、isolated cwd、item 検出、
+prompt は多層防御です。より強い保証が必要なら、利用者または配布環境が
+codex app-server process を外部 sandbox へ収容してください。
+
+Codex home（$CODEX_HOME、未設定時は ~/.codex）に上記の user-level
+instruction file が存在すると、Codex app-server はその内容を model
+instruction として読み込む場合があります。Bilingua は file の内容を変更
+しません。翻訳に影響し得るため、利用者はこれらの file も確認してください。
 
 data transfer and retention ~
 Codex app-server は local process ですが、選択 model によって document
@@ -785,19 +804,29 @@ Codex app-server schema の確認: >
 この script は次を行います。
 
 - mktemp で一時 directory を作る。
-- codex app-server generate-json-schema を実行する。
+- codex app-server generate-json-schema --experimental を実行する。
 - initialize、model/list、thread/start、turn/start、turn/interrupt の schema
   file を確認する。
-- ephemeral、instructionSources、approvalPolicy、sandbox field を確認する。
+- ephemeral、instructionSources、approvalPolicy、sandbox、permission profile
+  関連 field を確認する。
 - 終了時に一時 directory を削除する。
 
 通常 test は Codex、認証、network を使わず、fake app-server を使用します。 >
 
   sh scripts/test.sh
-  stylua --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua
-  luacheck lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua
+  stylua --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
+  luacheck lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
   nvim --headless -u NONE -c "helptags doc" -c "qa!"
 <
+
+認証済み Codex へ固定 marker を1回送る live test は明示的 opt-in です。応答
+本文は表示せず、標準 backend の gpt-5.6-luna／max、structured output、backend
+cleanup を検証します。外部 service への送信と利用料金が発生し得ます。 >
+
+  BILINGUA_RUN_LIVE_CODEX=1 sh scripts/test-live-codex.sh
+<
+
+別の Neovim executable では BILINGUA_NVIM=/absolute/path/to/nvim も指定します。
 
 型・静的検査方針は全 file で共通です。Lua 5.1 構文を使い、単一の
 .luacheckrc で vim だけを global として許可し、個別 file の抑制は

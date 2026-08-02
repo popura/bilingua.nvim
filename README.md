@@ -176,13 +176,13 @@ require("bilingua").setup({
     timeout_ms = 120000,
     backend_options = {
       command = { "codex", "app-server" },
-      model = nil,
-      reasoning_effort = nil,
+      model = "gpt-5.6-luna",
+      reasoning_effort = "max",
       require_ephemeral = true,
       strict_isolation = true,
       reject_external_instruction_sources = true,
       include_platform_default_reads = false,
-      experimental_api = false,
+      experimental_api = true,
       request_timeout_ms = 10000,
       shutdown_timeout_ms = 500,
     },
@@ -216,6 +216,10 @@ require("bilingua").setup({
 
 初期翻訳では unit を分割しません。単一 unit 自体が `limits.initial_batch_chars` を超える場合は、推論へ送信せず `E_DOCUMENT_TOO_LARGE` で開始を中止します。
 
+既定の `strict_isolation = true` は Codex の experimental permission profile API を使うため、`experimental_api = false` とは併用できません。`strict_isolation = false` は Codex 標準の `readOnly` sandbox へ戻り、隔離用一時 directory 外も読み取り可能になります。安全上の理由から、通常は既定値を変更しないでください。
+
+標準 backend は `gpt-5.6-luna` と reasoning effort `max` に固定されています。`max` は推論時間と token 使用量が増える場合があるため、速度を優先する用途では `reasoning_effort` を明示的に下げてください。
+
 ## 文書処理
 
 Plaintext は空行で区切られた段落を unit として扱い、改行形式と最終改行の有無を保持します。
@@ -238,17 +242,19 @@ backend protocol、認証、隔離、無効出力などの致命的な実行時�
 
 Bilingua.nvim は原文・訳文を信頼できない document data として Codex へ渡します。文書中の命令、URL、shell command は実行指示として扱いません。
 
-標準の strict isolation では、各 task について次を行います。
+標準の strict isolation では、backend instance ごとに隔離資源を作り、各 task の ephemeral thread で次の制約を適用します。
 
-- 空の一時 directory を Codex process／thread／turn の `cwd` にします。
+- backend instance ごとに空の一時 directory を作り、Codex process と各 thread／turn の `cwd` にします。
 - source path、source directory、Neovim RPC 情報を request や readable root に含めません。
 - ephemeral thread を要求し、確認できなければ document data を送る前に失敗します。
-- external `instructionSources` がないことを確認してから turn を開始します。
-- restricted read-only sandbox を使い、platform default readable roots を追加しません。
+- `thread/start` の `instructionSources` が隔離用一時 directory 内、または Bilingua の初期化時に検出した Codex user-level `AGENTS.override.md`／`AGENTS.md` と同一の file だけであることを確認してから turn を開始します。それ以外の instruction source は拒否します。
+- backend instance ごとに推測困難な名前の permission profile を定義し、各 task で隔離用一時 directory だけを read-only workspace root として許可します。network と local environment access は無効化します。
 - approval request を decline し、command、file change、MCP、web search、image view、subagent などの item を検出した task を中断します。
 - model output を schema、task/revision、文書構造、protected token、適用先 version の順に検証してから Editor adapter だけが反映します。
 
-`approvalPolicy = "never"` は tool を無効化する設定ではありません。上記の sandbox と検出は多層防御ですが、OS level で process execution を完全禁止するものではありません。さらに強い保証が必要な環境では、利用者側で `codex app-server` process を外部 sandbox に収容してください。
+空の `environments` は local environment access を無効化しますが、`approvalPolicy = "never"` だけで tool が無効になるわけではありません。permission profile、environment 無効化、item 検出は多層防御です。さらに強い保証が必要な環境では、利用者側で `codex app-server` process を外部 sandbox に収容してください。
+
+Codex home（`$CODEX_HOME`、未設定時は `~/.codex`）に上記の user-level instruction file が存在すると、Codex app-server はその内容を model instruction として読み込む場合があります。Bilingua は `realpath` で同一と確認できた file だけを許可しますが、instruction の内容は変更しません。翻訳に影響し得るため、利用者はこれらの file も確認してください。
 
 Codex app-server が local process でも、選択モデルによって document content が外部 OpenAI service へ送信される場合があります。Bilingua.nvim は機密情報を自動検出・匿名化しません。Codex／provider 側の data retention、logging、cache は各 service の方針に従い、プラグインの非永続性では保証されません。認証情報を設定、文書、log に書き込まないでください。
 
@@ -304,8 +310,8 @@ bilingua.status()
 
 ```sh
 sh scripts/test.sh
-stylua --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua
-luacheck lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua
+stylua --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
+luacheck lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
 nvim --headless -u NONE -c "helptags doc" -c "qa!"
 ```
 
@@ -325,6 +331,14 @@ Codex app-server の生成スキーマとの互換性は次で確認します。
 sh scripts/check-codex-schema.sh
 ```
 
-この検査は `codex app-server generate-json-schema` を一時 directory へ実行し、利用 method と必須 field を確認してから directory を削除します。CI では最低 Neovim 0.10.4 と stable、allowed-failure の nightly、週次／手動の最新 Codex schema check を実行します。認証・model availability・network に依存する live translation test は通常 CI に含めません。
+この検査は `codex app-server generate-json-schema --experimental` を一時 directory へ実行し、利用 method、必須 field、permission profile 関連 field を確認してから directory を削除します。
+
+認証・model availability・network に依存する実 Codex test は、明示的な opt-in で1回だけ実行できます。document の代わりに固定 marker を送り、応答本文は出力せず、標準 backend の `gpt-5.6-luna`／`max`、structured output、cleanup を検証します。外部 service への送信と利用料金が発生し得ます。
+
+```sh
+BILINGUA_RUN_LIVE_CODEX=1 sh scripts/test-live-codex.sh
+```
+
+別の Neovim executable を使う場合は `BILINGUA_NVIM=/absolute/path/to/nvim` も指定します。CI では最低 Neovim 0.10.4 と stable、allowed-failure の nightly、週次／手動の最新 Codex schema check を実行し、live test は通常含めません。
 
 詳細は `:help bilingua`、安全上の注意は `:help bilingua-security` を参照してください。

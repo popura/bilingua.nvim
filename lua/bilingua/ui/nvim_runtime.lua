@@ -114,7 +114,29 @@ local function environment()
   }
 end
 
-local function backend_runtime(runtime_scheduler)
+local function join_path(directory, name)
+  return directory:gsub("[\\/]+$", "") .. package.config:sub(1, 1) .. name
+end
+
+local function global_instruction_sources(options)
+  local codex_home = options.codex_home
+  if type(codex_home) ~= "string" or codex_home == "" then
+    codex_home = vim.env.CODEX_HOME
+  end
+  if type(codex_home) ~= "string" or codex_home == "" then
+    codex_home = vim.fn.expand("~/.codex")
+  end
+  local sources = {}
+  for _, filename in ipairs({ "AGENTS.override.md", "AGENTS.md" }) do
+    local path = join_path(codex_home, filename)
+    if vim.fn.filereadable(path) == 1 then
+      sources[#sources + 1] = path
+    end
+  end
+  return sources
+end
+
+local function backend_runtime(runtime_scheduler, options)
   return {
     schedule = function(callback)
       runtime_scheduler:schedule(callback)
@@ -135,9 +157,10 @@ local function backend_runtime(runtime_scheduler)
       local uv = vim.uv or vim.loop
       return uv.fs_realpath(path)
     end,
-    process_factory = function(command, options, on_exit)
-      return vim.system(command, options, on_exit)
+    process_factory = function(command, process_options, on_exit)
+      return vim.system(command, process_options, on_exit)
     end,
+    allowed_instruction_sources = global_instruction_sources(options),
   }
 end
 
@@ -201,12 +224,13 @@ local function analyze_markdown(text)
   return { capture_count = capture_count }
 end
 
-function M.new()
+function M.new(options)
+  local resolved = options or {}
   local runtime_scheduler = scheduler()
   return {
     scheduler = runtime_scheduler,
     environment = environment(),
-    backend_runtime = backend_runtime(runtime_scheduler),
+    backend_runtime = backend_runtime(runtime_scheduler, resolved),
     document_runtime = {
       markdown_available = markdown_available,
       analyze_markdown = analyze_markdown,

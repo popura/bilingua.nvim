@@ -80,13 +80,13 @@ local DEFAULTS = {
     timeout_ms = 120000,
     backend_options = {
       command = { "codex", "app-server" },
-      model = nil,
-      reasoning_effort = nil,
+      model = "gpt-5.6-luna",
+      reasoning_effort = "max",
       require_ephemeral = true,
       strict_isolation = true,
       reject_external_instruction_sources = true,
       include_platform_default_reads = false,
-      experimental_api = false,
+      experimental_api = true,
       request_timeout_ms = 10000,
       shutdown_timeout_ms = 500,
     },
@@ -467,6 +467,11 @@ local function validate(config)
   end
   if backend_options.strict_isolation and backend_options.include_platform_default_reads then
     return invalid("strict isolation cannot include platform default readable roots")
+  end
+  if backend_options.strict_isolation and not backend_options.experimental_api then
+    return invalid(
+      "translation.backend_options.experimental_api must be true when strict_isolation is true"
+    )
   end
 
   for _, field in ipairs({ "signs", "virtual_text", "notify_backend", "show_progress" }) do

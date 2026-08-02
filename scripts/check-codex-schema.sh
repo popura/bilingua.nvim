@@ -9,7 +9,7 @@ fi
 schema_dir=$(mktemp -d "${TMPDIR:-/tmp}/bilingua-codex-schema.XXXXXX")
 trap 'rm -rf -- "$schema_dir"' EXIT HUP INT TERM
 
-codex app-server generate-json-schema --out "$schema_dir"
+codex app-server generate-json-schema --experimental --out "$schema_dir"
 
 required_files="
 v1/InitializeParams.json
@@ -44,6 +44,17 @@ require_field() {
   fi
 }
 
+require_value() {
+  relative_path=$1
+  value=$2
+  description=$3
+  needle='"'$value'"'
+  if ! grep -Fq "$needle" "$schema_dir/$relative_path"; then
+    echo "error: Codex schema $relative_path no longer exposes required $description: $value" >&2
+    exit 1
+  fi
+}
+
 require_method() {
   method=$1
   needle='"'$method'"'
@@ -55,11 +66,17 @@ require_method() {
 
 require_field v1/InitializeParams.json clientInfo
 require_field v1/InitializeParams.json capabilities
+require_field v1/InitializeParams.json experimentalApi
 require_field v2/ModelListParams.json cursor
 require_field v2/ThreadStartParams.json ephemeral
 require_field v2/ThreadStartParams.json developerInstructions
 require_field v2/ThreadStartParams.json approvalPolicy
 require_field v2/ThreadStartParams.json sandbox
+require_field v2/ThreadStartParams.json permissions
+require_field v2/ThreadStartParams.json runtimeWorkspaceRoots
+require_field v2/ThreadStartParams.json environments
+require_field v2/ThreadStartParams.json config
+require_value v2/ThreadStartParams.json read-only "thread/start sandbox value"
 require_field v2/ThreadStartResponse.json instructionSources
 require_field v2/ThreadStartResponse.json ephemeral
 require_field v2/TurnStartParams.json threadId
@@ -80,4 +97,4 @@ require_method item/permissions/requestApproval
 require_method mcpServer/elicitation/request
 require_method item/tool/requestUserInput
 
-echo "Codex app-server schema exposes every method and field required by Bilingua.nvim."
+echo "Codex app-server experimental schema exposes every method, field, and value required by Bilingua.nvim."

@@ -109,6 +109,7 @@ local function open_ready(context)
   })
   context.flush()
   assert(opened, open_error and open_error.message)
+  return initialize
 end
 
 local function request_payload()
@@ -156,6 +157,7 @@ test.it("opens through the app-server handshake and selects a text model", funct
   test.eq("/tmp/bilingua-isolated-test", context.server.options.cwd)
   local initialize = assert(context.server:take("initialize"))
   test.eq("bilingua_nvim", initialize.params.clientInfo.name)
+  test.eq(true, initialize.params.capabilities.experimentalApi)
   test.eq("item/agentMessage/delta", initialize.params.capabilities.optOutNotificationMethods[1])
   context.server:respond(initialize, { serverInfo = {} }, nil, { 1, 2, 4 })
   context.flush()
@@ -185,8 +187,9 @@ end)
 -- Preconditions: The backend is ready and a normalized request contains secret
 -- document data only in user_content. Prerequisites: Each task must create an
 -- ephemeral thread and validate instructionSources before turn/start.
--- Verification items: thread/start contains no payload, turn/start uses the exact
--- isolated cwd/restricted read-only policy, and only final item text completes.
+-- Verification items: thread/start contains no payload, selects a unique
+-- permission profile that grants read access only to the isolated workspace,
+-- disables network and environment access, and only final item text completes.
 test.it("runs each request in an isolated ephemeral thread", function()
   local context = harness()
   open_ready(context)
@@ -202,7 +205,15 @@ test.it("runs each request in an isolated ephemeral thread", function()
   local thread_start = assert(context.server:take("thread/start"))
   test.eq(true, thread_start.params.ephemeral)
   test.eq("never", thread_start.params.approvalPolicy)
-  test.eq("readOnly", thread_start.params.sandbox)
+  test.eq(nil, thread_start.params.sandbox)
+  test.eq("/tmp/bilingua-isolated-test", thread_start.params.runtimeWorkspaceRoots[1])
+  test.eq(true, json.is_array(thread_start.params.environments))
+  test.eq(0, #thread_start.params.environments)
+  test.eq("bilingua_nvim_isolated_bilingua_isolated_test", thread_start.params.permissions)
+  local profile =
+    assert(thread_start.params.config["permissions." .. thread_start.params.permissions])
+  test.eq("read", profile.filesystem[":workspace_roots"]["."])
+  test.eq(false, profile.network.enabled)
   test.eq("SAFE SYSTEM INSTRUCTION", thread_start.params.developerInstructions)
   test.eq(nil, json.encode(thread_start):find("SECRET DOCUMENT PAYLOAD", 1, true))
   context.server:respond(thread_start, {
@@ -213,10 +224,7 @@ test.it("runs each request in an isolated ephemeral thread", function()
   local turn_start = assert(context.server:take("turn/start"))
   test.eq("SECRET DOCUMENT PAYLOAD", turn_start.params.input[1].text)
   test.eq("/tmp/bilingua-isolated-test", turn_start.params.cwd)
-  test.eq("readOnly", turn_start.params.sandboxPolicy.type)
-  test.eq("restricted", turn_start.params.sandboxPolicy.access.type)
-  test.eq(false, turn_start.params.sandboxPolicy.access.includePlatformDefaults)
-  test.eq("/tmp/bilingua-isolated-test", turn_start.params.sandboxPolicy.access.readableRoots[1])
+  test.eq(nil, turn_start.params.sandboxPolicy)
   context.server:respond(turn_start, {
     turn = { id = "turn:1", status = "inProgress", items = json.array() },
   })
@@ -237,6 +245,82 @@ test.it("runs each request in an isolated ephemeral thread", function()
   test.eq(1, #completions)
   test.eq('{"ok":true}', completions[1].text)
   test.eq("test-model", completions[1].metadata.model)
+end)
+
+-- Preconditions: A caller explicitly disables strict isolation and the
+-- experimental API. Prerequisites: This compatibility path must use only stable
+-- app-server fields. Verification items: thread/start selects the standard
+-- read-only sandbox, turn/start disables network, and neither request contains a
+-- permission profile or the removed readOnly.access field.
+test.it("uses the stable read-only fallback outside strict isolation", function()
+  local context = harness({ strict_isolation = false, experimental_api = false })
+  local initialize = open_ready(context)
+  test.eq(false, initialize.params.capabilities.experimentalApi)
+
+  local _, thread_start, turn_start = start_turn(context, {
+    on_complete = function() end,
+    on_error = function(err)
+      error(err.message)
+    end,
+  })
+  test.eq("read-only", thread_start.params.sandbox)
+  test.eq(nil, thread_start.params.permissions)
+  test.eq(nil, thread_start.params.runtimeWorkspaceRoots)
+  test.eq(nil, thread_start.params.environments)
+  test.eq(nil, thread_start.params.config)
+  test.eq("readOnly", turn_start.params.sandboxPolicy.type)
+  test.eq(false, turn_start.params.sandboxPolicy.networkAccess)
+  test.eq(nil, turn_start.params.sandboxPolicy.access)
+end)
+
+-- Preconditions: The app-server reports one user-owned global instruction file
+-- together with an instruction file inside the isolated cwd, then reports a
+-- different file below the global file's parent directory in a second request.
+-- Prerequisites: allowed_instruction_sources names individual canonical files;
+-- it does not grant trust to their parent directories. Verification items: the
+-- exact configured file reaches turn/start, while the sibling path is rejected
+-- before the secret document payload is sent.
+test.it("allows only explicitly configured instruction source files", function()
+  local allowed_source = "/home/test/.codex/AGENTS.md"
+  local context = harness({ allowed_instruction_sources = { allowed_source } })
+  open_ready(context)
+  context.backend:request(request_payload(), {
+    on_complete = function() end,
+    on_error = function(err)
+      error(err.message)
+    end,
+  })
+  local thread_start = assert(context.server:take("thread/start"))
+  context.server:respond(thread_start, {
+    thread = { id = "thread:allowed", ephemeral = true },
+    instructionSources = {
+      allowed_source,
+      "/tmp/bilingua-isolated-test/AGENTS.md",
+    },
+  })
+  context.flush()
+  local turn_start = assert(context.server:take("turn/start"))
+  test.eq("SECRET DOCUMENT PAYLOAD", turn_start.params.input[1].text)
+
+  local blocked = harness({ allowed_instruction_sources = { allowed_source } })
+  open_ready(blocked)
+  local received_error
+  blocked.backend:request(request_payload(), {
+    on_complete = function()
+      error("unexpected completion")
+    end,
+    on_error = function(err)
+      received_error = err
+    end,
+  })
+  local blocked_thread = assert(blocked.server:take("thread/start"))
+  blocked.server:respond(blocked_thread, {
+    thread = { id = "thread:blocked", ephemeral = true },
+    instructionSources = { "/home/test/.codex/nested/AGENTS.md" },
+  })
+  blocked.flush()
+  test.eq("E_BACKEND_INSTRUCTION_SOURCE", received_error.code)
+  test.eq(nil, blocked.server:take("turn/start"))
 end)
 
 -- Preconditions: Two thread/start responses are unsafe: one is non-ephemeral and

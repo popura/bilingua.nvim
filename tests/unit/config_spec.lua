@@ -14,6 +14,7 @@ test.it("resolves isolated defaults and rejects persistent sessions", function()
   test.eq(700, first.sync.debounce_ms)
   test.eq(false, first.layout.open_folds)
   test.eq("codex_app_server", first.translation.backend)
+  test.eq(true, first.translation.backend_options.experimental_api)
   first.sync.debounce_ms = 1
 
   local second = assert(config.resolve({}))
@@ -22,6 +23,37 @@ test.it("resolves isolated defaults and rejects persistent sessions", function()
   local resolved, err = config.resolve({ persistence = { enabled = true } })
   test.eq(nil, resolved)
   test.eq("E_INVALID_ARGUMENT", err.code)
+end)
+
+-- Preconditions: A caller resolves the unmodified plugin defaults.
+-- Prerequisites: The production Codex route and the opt-in live test must share
+-- one explicit model/effort baseline instead of inheriting an account default.
+-- Verification items: model selection is pinned to GPT-5.6 Luna and reasoning
+-- effort is pinned to max.
+test.it("pins the default Codex model and effort for live verification", function()
+  local resolved = assert(config.resolve({}))
+
+  test.eq("gpt-5.6-luna", resolved.translation.backend_options.model)
+  test.eq("max", resolved.translation.backend_options.reasoning_effort)
+end)
+
+-- Preconditions: Strict isolation is requested while the app-server experimental
+-- API is disabled. Prerequisites: restricted filesystem reads now require the
+-- permission-profile fields gated by that capability. Verification items: config
+-- resolution fails before backend startup and names the incompatible option.
+test.it("requires the experimental API for strict Codex isolation", function()
+  local resolved, err = config.resolve({
+    translation = {
+      backend_options = {
+        strict_isolation = true,
+        experimental_api = false,
+      },
+    },
+  })
+
+  test.eq(nil, resolved)
+  test.eq("E_INVALID_ARGUMENT", err.code)
+  assert(err.message:find("experimental_api", 1, true), err.message)
 end)
 
 -- Preconditions: Callers provide wrong primitive types or out-of-range values for
