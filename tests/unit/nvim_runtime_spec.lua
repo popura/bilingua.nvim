@@ -16,6 +16,25 @@ test.it("provides a monotonic backend clock", function()
   test.eq(true, second >= first)
 end)
 
+-- Preconditions: Neovim provides its bundled Markdown parser, and this repository
+-- contributes queries/markdown/bilingua.scm through runtimepath. Prerequisites:
+-- current Neovim may expose vim.treesitter.query.get as a callable table (a table
+-- with __call) instead of a Lua function, so runtime detection must exercise the
+-- API instead of rejecting its representation. Verification items: Markdown is
+-- reported as available and the repository query captures a simple heading.
+test.it("accepts the installed Tree-sitter Markdown parser and query", function()
+  local runtime = runtime_module.new()
+  local available, availability_error = runtime.document_runtime.markdown_available()
+
+  test.eq(nil, availability_error)
+  test.eq(true, available)
+
+  local analysis, analysis_error = runtime.document_runtime.analyze_markdown("# Heading\n")
+  test.eq(nil, analysis_error)
+  test.eq("table", type(analysis))
+  test.eq(true, analysis.capture_count > 0)
+end)
+
 -- Preconditions: A temporary Codex home contains both supported global
 -- instruction filenames and no other Codex state. Prerequisites: Runtime
 -- discovery checks the real filesystem and receives an explicit home path so
