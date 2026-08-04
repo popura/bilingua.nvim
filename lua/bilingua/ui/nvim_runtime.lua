@@ -172,7 +172,6 @@ local function markdown_query()
     type(vim.treesitter) ~= "table"
     or type(vim.treesitter.get_string_parser) ~= "function"
     or type(vim.treesitter.query) ~= "table"
-    or type(vim.treesitter.query.get) ~= "function"
   then
     return nil, "Neovim Tree-sitter APIs are unavailable"
   end
