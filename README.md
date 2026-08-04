@@ -12,6 +12,8 @@ Bilingua.nvim は、Neovim で原文（source）と訳文（target、既定は�
 
 次の例は、英語の `README.md` を日本語の target と並べ、現在位置の編集を同期して Session を終了する最小操作です。backend は翻訳 request の実行先です。Session は、一組の source／target buffer、対応関係、同期 task、backend のライフサイクルを管理する実行単位です。Codex backend を使う場合は、送信する文書内容と利用料金を実行前に確認してください。
 
+![Bilingua.nvim で原文と訳文を同期するデモ](assets/demo.gif)
+
 ```sh
 cd /path/to/your/project
 nvim README.md
