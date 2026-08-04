@@ -37,6 +37,9 @@ test.it("injects configured retry policy and the Session scheduler", function()
       tempdir_factory = function() end,
       remove_tree = function() end,
       realpath = function() end,
+      now_ms = function()
+        return 0
+      end,
       process_factory = function() end,
     },
   })

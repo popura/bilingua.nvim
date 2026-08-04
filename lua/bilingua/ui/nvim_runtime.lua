@@ -1,5 +1,10 @@
 local M = {}
 
+local function now_ms()
+  local uv = vim.uv or vim.loop
+  return math.floor(uv.hrtime() / 1000000)
+end
+
 local function timer_handle(milliseconds, callback)
   local uv = vim.uv or vim.loop
   local timer = assert(uv.new_timer())
@@ -81,10 +86,7 @@ local function environment()
         data = data,
       })
     end,
-    now_ms = function()
-      local uv = vim.uv or vim.loop
-      return math.floor(uv.hrtime() / 1000000)
-    end,
+    now_ms = now_ms,
     notify_error = function(error_code)
       vim.notify(
         ("Bilingua: runtime synchronization failed [%s]"):format(error_code),
@@ -157,6 +159,7 @@ local function backend_runtime(runtime_scheduler, options)
       local uv = vim.uv or vim.loop
       return uv.fs_realpath(path)
     end,
+    now_ms = now_ms,
     process_factory = function(command, process_options, on_exit)
       return vim.system(command, process_options, on_exit)
     end,

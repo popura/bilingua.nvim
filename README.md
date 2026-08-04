@@ -47,7 +47,7 @@ Neovim で次を実行します。
 |---|---|
 | Neovim | 0.10 以上 |
 | Codex backend | Codex CLI 0.146.0 以上、`codex login` で利用可能な認証、text input 対応 model |
-| Codex model／reasoning effort | 既定は `gpt-5.6-luna`／`max` |
+| Codex model／reasoning effort | 既定は `gpt-5.6-luna`／`low` |
 | llama-server backend | `curl`、外部で起動した llama-server、対応 chat template を持つ instruct model |
 | Lua runtime | Neovim 同梱 runtime |
 | 外部 Lua dependency | 該当なし |
@@ -156,6 +156,9 @@ Bilingua.nvim の command は登録直後から既定設定を使います。`re
   Health: healthy
   Backend: codex_app_server
   Model: gpt-5.6-luna
+  Effort: low
+  Last latency: first agent delta <milliseconds> ms / turn completed <milliseconds> ms
+  Retries: 0
   Groups: 2 clean / 0 dirty / 0 syncing / 0 conflict / 0 error
   Auto sync: enabled
   ```
@@ -176,7 +179,7 @@ Bilingua.nvim の command は登録直後から既定設定を使います。`re
 | `:BilinguaUseSource` | conflict で source を正として target を更新します。 |
 | `:BilinguaUseJapanese` | conflict で target を正として source を更新します。 |
 | `:BilinguaNext` / `:BilinguaPrev` | 次／前の mapping group へ移動します。 |
-| `:BilinguaStatus` | Session metadata、backend health、model、state 別 group 数を表示します。 |
+| `:BilinguaStatus` | Session metadata、backend health、model／effort、直近の Codex latency、再試行回数、state 別 group 数を表示します。 |
 | `:BilinguaRetry` | 現在の mapping group、または直前の開始処理を再試行します。 |
 | `:BilinguaRestartBackend` | backend を再起動し、document state を保って自動同期を再開します。 |
 | `:BilinguaStop` | `stop.sync_pending` に従って target 編集を source へ同期し、source buffer を残して Session を終了します。 |
@@ -241,7 +244,7 @@ require("bilingua").setup({
     backends = {
       codex_app_server = {
         model = "gpt-5.6-luna",
-        reasoning_effort = "max",
+        reasoning_effort = "low",
         strict_isolation = true,
         experimental_api = true,
       },
@@ -304,7 +307,7 @@ llama-server の互換性、症状別の確認事項、構造化出力の形式�
 | `stop.sync_pending` | `true` | 正常停止時の target-to-source 同期 |
 | `translation.backend` | `"codex_app_server"` | inference backend |
 | `translation.backends.codex_app_server.model` | `"gpt-5.6-luna"` | Codex model |
-| `translation.backends.codex_app_server.reasoning_effort` | `"max"` | Codex reasoning effort |
+| `translation.backends.codex_app_server.reasoning_effort` | `"low"` | Codex reasoning effort |
 | `translation.backends.codex_app_server.strict_isolation` | `true` | Codex 実行分離 |
 | `documents.fallback_to_plaintext` | `true` | route 解決時の Plaintext fallback |
 | `ui.show_progress` | `true` | 初期翻訳 batch の進捗表示 |
@@ -344,7 +347,8 @@ llama-server の互換性、症状別の確認事項、構造化出力の形式�
 - `approvalPolicy = "never"` 単独は tool-disable option ではありません。完全な OS process 実行禁止が必要な環境では、Codex app-server process を外部 sandbox へ収容してください。
 - Codex app-server は選択 model に応じて document content を外部 OpenAI service へ送信する場合があります。Bilingua.nvim 自身がデータを保存しない設計は provider の retention、logging、cache を保証しません。
 - Codex home の `AGENTS.override.md`／`AGENTS.md` は model instruction に影響する場合があります。利用者は内容を確認してください。
-- 既定の `gpt-5.6-luna`／`max` は推論時間と token 使用量を増やす場合があります。
+- 既定の `gpt-5.6-luna`／`low` は応答速度を優先します。複雑な文書で品質を
+  優先する場合は、reasoning effort を明示的に上げてください。
 - llama-server backend は loopback HTTP 専用です。remote endpoint、TLS、認証 header、redirect、server process の起動／停止には対応しません。
 - llama.cpp version、model 能力、chat template により Schema 制約や翻訳品質が変わります。Bilingua.nvim は server 側の request log、cache、model telemetry を制御しません。
 - Codex permission profile は llama-server process へ適用されません。local model の license、利用条件、文書の機密性、CPU／GPU／memory は利用者が管理します。
@@ -409,14 +413,14 @@ Codex app-server experimental schema exposes every method, field, and value requ
 
 ### Opt-in live test
 
-Codex live test は、認証済み Codex へ固定 marker を1回送り、`gpt-5.6-luna`／`max`、structured output、backend cleanup を確認します。実行前に、外部 service への送信と利用料金を確認してください。
+Codex live test は、認証済み Codex へ固定 marker を1回送り、`gpt-5.6-luna`／`low`、structured output、backend cleanup を確認します。実行前に、外部 service への送信と利用料金を確認してください。
 
 ```sh
 BILINGUA_RUN_LIVE_CODEX=1 sh scripts/test-live-codex.sh
 ```
 
 ```text
-LIVE_CODEX_TEST passed model=gpt-5.6-luna effort=max open_ms=<number> request_ms=<number> response_content=omitted cleanup=ok
+LIVE_CODEX_TEST passed model=gpt-5.6-luna effort=low open_ms=<number> request_ms=<number> response_content=omitted cleanup=ok
 ```
 
 llama live test は、利用者が事前に起動した loopback server に対して初回翻訳と semantic patch（mapping group の変更を反対側へ反映する task）を一件ずつ実行し、protected token、timeout、backend cleanup を確認します。

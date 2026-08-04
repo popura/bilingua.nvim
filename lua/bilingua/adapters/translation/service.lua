@@ -104,6 +104,11 @@ function Service.new(components)
       max_delay_ms = max_delay_ms,
     },
     logger = components.logger,
+    runtime_metrics = {
+      retry_count = 0,
+      last_first_agent_message_delta_ms = nil,
+      last_turn_completed_ms = nil,
+    },
     state = "new",
     jobs = {},
     close_callbacks = {},
@@ -146,6 +151,14 @@ function Service:capabilities()
     copy[key] = value
   end
   return copy
+end
+
+function Service:runtime_status()
+  return {
+    retry_count = self.runtime_metrics.retry_count,
+    last_first_agent_message_delta_ms = self.runtime_metrics.last_first_agent_message_delta_ms,
+    last_turn_completed_ms = self.runtime_metrics.last_turn_completed_ms,
+  }
 end
 
 local function cancel_open(service)
@@ -448,10 +461,6 @@ function Service:submit(task, callbacks)
     end
     local exponent = math.max(0, job.attempts - 1)
     local delay = math.min(self.retry.initial_delay_ms * (2 ^ exponent), self.retry.max_delay_ms)
-    self:record("translation_retry_scheduled", task, {
-      error_code = err.code,
-      codec_id = codec.id,
-    })
     local scheduled_attempt = job.attempts
     local scheduled, retry_handle = pcall(self.defer, delay, function()
       job.retry_handle = nil
@@ -478,10 +487,17 @@ function Service:submit(task, callbacks)
           retry_handle
         )
       )
-    elseif job.attempts == scheduled_attempt and not job.settled and not job.cancelled then
-      job.retry_handle = retry_handle
-    elseif retry_handle and type(retry_handle.cancel) == "function" then
-      retry_handle:cancel()
+    else
+      self.runtime_metrics.retry_count = self.runtime_metrics.retry_count + 1
+      self:record("translation_retry_scheduled", task, {
+        error_code = err.code,
+        codec_id = codec.id,
+      })
+      if job.attempts == scheduled_attempt and not job.settled and not job.cancelled then
+        job.retry_handle = retry_handle
+      elseif retry_handle and type(retry_handle.cancel) == "function" then
+        retry_handle:cancel()
+      end
     end
   end
 
@@ -502,6 +518,19 @@ function Service:submit(task, callbacks)
         end
         attempt_terminal = true
         job.backend_handle = nil
+        local metadata = type(raw_response) == "table" and raw_response.metadata or nil
+        if type(metadata) == "table" and rawget(metadata, "turn_completed_ms") ~= nil then
+          local first_delta = metadata.first_agent_message_delta_ms
+          local turn_completed = metadata.turn_completed_ms
+          self.runtime_metrics.last_first_agent_message_delta_ms = type(first_delta) == "number"
+              and first_delta >= 0
+              and first_delta
+            or nil
+          self.runtime_metrics.last_turn_completed_ms = type(turn_completed) == "number"
+              and turn_completed >= 0
+              and turn_completed
+            or nil
+        end
         local decoded_ok, result, result_error =
           pcall(codec.decode, codec, raw_response, task, capabilities)
         if not decoded_ok then

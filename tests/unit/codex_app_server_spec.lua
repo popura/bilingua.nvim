@@ -22,6 +22,7 @@ local function harness(extra)
   local timers = {}
   local removed = {}
   local runtime_calls = { tempdir = 0 }
+  local current_ms = 0
   local server = fake_server.new()
   local function schedule(callback)
     pending[#pending + 1] = callback
@@ -67,6 +68,9 @@ local function harness(extra)
     realpath = function(path)
       return path
     end,
+    now_ms = function()
+      return current_ms
+    end,
     request_timeout_ms = 10,
     turn_timeout_ms = 120,
     shutdown_timeout_ms = 5,
@@ -78,6 +82,9 @@ local function harness(extra)
     timers = timers,
     removed = removed,
     runtime_calls = runtime_calls,
+    set_now_ms = function(value)
+      current_ms = value
+    end,
   }
 end
 
@@ -192,6 +199,7 @@ end
 -- default text model, with the first response split across arbitrary chunks.
 -- Prerequisites: open owns JSON-RPC request IDs, initialized notification, and
 -- model discovery. Verification items: command/cwd isolation, handshake fields,
+-- agent-message delta notifications remain subscribed for latency measurement,
 -- model selection, structured output without prompt Schema duplication, and one
 -- deferred completion.
 test.it("opens through the app-server handshake and selects a text model", function()
@@ -208,7 +216,7 @@ test.it("opens through the app-server handshake and selects a text model", funct
   local initialize = assert(context.server:take("initialize"))
   test.eq("bilingua_nvim", initialize.params.clientInfo.name)
   test.eq(true, initialize.params.capabilities.experimentalApi)
-  test.eq("item/agentMessage/delta", initialize.params.capabilities.optOutNotificationMethods[1])
+  test.eq(nil, initialize.params.capabilities.optOutNotificationMethods)
   context.server:respond(initialize, { serverInfo = {} }, nil, { 1, 2, 4 })
   context.flush()
   test.eq("initialized", assert(context.server:take("initialized")).method)
@@ -296,6 +304,67 @@ test.it("runs each request in an isolated ephemeral thread", function()
   test.eq(1, #completions)
   test.eq('{"ok":true}', completions[1].text)
   test.eq("test-model", completions[1].metadata.model)
+end)
+
+-- Preconditions: A ready backend starts one request at a controlled monotonic
+-- time, receives two agent-message deltas, and later receives a successful
+-- turn/completed notification. Prerequisites: app-server notifications may be
+-- delivered in separate scheduled callbacks, and only the first agent-message
+-- delta defines the first-output latency. Verification items: the successful
+-- response reports elapsed milliseconds from request start to the first delta
+-- and turn completion, and the backend exposes the model-selected reasoning
+-- effort without retaining response text in its status API.
+test.it("measures first agent delta and turn completion latency", function()
+  local context = harness()
+  open_ready(context)
+  context.set_now_ms(100)
+  local completion
+  start_turn(context, {
+    on_complete = function(value)
+      completion = value
+    end,
+    on_error = function(err)
+      error(err.message)
+    end,
+  })
+
+  context.set_now_ms(165)
+  context.server:notify("item/agentMessage/delta", {
+    threadId = "thread:1",
+    turnId = "turn:1",
+    itemId = "item:1",
+    delta = "{",
+  })
+  context.flush()
+  context.set_now_ms(175)
+  context.server:notify("item/agentMessage/delta", {
+    threadId = "thread:1",
+    turnId = "turn:1",
+    itemId = "item:1",
+    delta = '"ok":true}',
+  })
+  context.flush()
+
+  context.set_now_ms(250)
+  context.server:notify("item/completed", {
+    threadId = "thread:1",
+    turnId = "turn:1",
+    item = {
+      id = "item:1",
+      type = "agentMessage",
+      phase = "final_answer",
+      text = '{"ok":true}',
+    },
+  })
+  context.server:notify("turn/completed", {
+    threadId = "thread:1",
+    turn = { id = "turn:1", status = "completed", items = json.array() },
+  })
+  context.flush()
+
+  test.eq("medium", context.backend:selected_reasoning_effort())
+  test.eq(65, completion.metadata.first_agent_message_delta_ms)
+  test.eq(150, completion.metadata.turn_completed_ms)
 end)
 
 -- Preconditions: A caller explicitly disables strict isolation and the

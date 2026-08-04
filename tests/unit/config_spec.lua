@@ -27,14 +27,16 @@ end)
 
 -- Preconditions: A caller resolves the unmodified plugin defaults.
 -- Prerequisites: The production Codex route and the opt-in live test must share
--- one explicit model/effort baseline instead of inheriting an account default.
+-- one explicit model/effort baseline instead of inheriting an account default,
+-- while translation tasks remain serialized unless the user opts into concurrency.
 -- Verification items: model selection is pinned to GPT-5.6 Luna and reasoning
--- effort is pinned to max.
-test.it("pins the default Codex model and effort for live verification", function()
+-- effort is pinned to low, with max_concurrency pinned to one.
+test.it("pins the default Codex model effort and concurrency", function()
   local resolved = assert(config.resolve({}))
 
   test.eq("gpt-5.6-luna", resolved.translation.backends.codex_app_server.model)
-  test.eq("max", resolved.translation.backends.codex_app_server.reasoning_effort)
+  test.eq("low", resolved.translation.backends.codex_app_server.reasoning_effort)
+  test.eq(1, resolved.sync.max_concurrency)
 end)
 
 -- Preconditions: Strict isolation is requested while the Codex experimental API

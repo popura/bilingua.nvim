@@ -92,6 +92,30 @@ local function automatic_sync_line(status)
   return "Auto sync: " .. (status.automatic_sync and "enabled" or "disabled")
 end
 
+local function elapsed_ms(value)
+  if type(value) ~= "number" or value < 0 then
+    return "unavailable"
+  end
+  return ("%d ms"):format(math.floor(value))
+end
+
+local function latency_line(status)
+  local metrics = type(status.runtime_metrics) == "table" and status.runtime_metrics or {}
+  return ("Last latency: first agent delta %s / turn completed %s"):format(
+    elapsed_ms(metrics.last_first_agent_message_delta_ms),
+    elapsed_ms(metrics.last_turn_completed_ms)
+  )
+end
+
+local function retries_line(status)
+  local metrics = type(status.runtime_metrics) == "table" and status.runtime_metrics or {}
+  local count = metrics.retry_count
+  if type(count) ~= "number" or count < 0 then
+    return "Retries: unavailable"
+  end
+  return ("Retries: %d"):format(math.floor(count))
+end
+
 function M.format_status(status)
   return table.concat({
     "Session: " .. tostring(status.state or "unknown"),
@@ -105,6 +129,9 @@ function M.format_status(status)
     "Aligner: " .. tostring(status.aligner or "unknown"),
     "Backend: " .. tostring(status.backend or "unknown"),
     "Model: " .. tostring(status.model or "unresolved"),
+    "Effort: " .. tostring(status.reasoning_effort or "unresolved"),
+    latency_line(status),
+    retries_line(status),
     groups_line(status.groups or {}),
     "Active tasks: " .. tostring(status.active_tasks or 0),
     automatic_sync_line(status),
