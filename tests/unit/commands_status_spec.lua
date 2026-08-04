@@ -70,8 +70,7 @@ test.it("reports reasoning effort latency and retries", function()
   test.eq(true, output:find("Effort: low", 1, true) ~= nil)
   test.eq(
     true,
-    output:find("Last latency: first agent delta 420 ms / turn completed 610 ms", 1, true)
-      ~= nil
+    output:find("Last latency: first agent delta 420 ms / turn completed 610 ms", 1, true) ~= nil
   )
   test.eq(true, output:find("Retries: 2", 1, true) ~= nil)
 end)
