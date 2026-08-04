@@ -203,6 +203,7 @@ function Backend.new(options)
     "tempdir_factory",
     "remove_tree",
     "realpath",
+    "now_ms",
     "process_factory",
   }) do
     if type(resolved[dependency]) ~= "function" then
@@ -230,6 +231,7 @@ function Backend.new(options)
     tempdir_factory = resolved.tempdir_factory,
     remove_tree = resolved.remove_tree,
     realpath = resolved.realpath,
+    now_ms = resolved.now_ms,
     process_factory = resolved.process_factory,
     logger = resolved.logger,
     ring_size = resolved.ring_size or 200,
@@ -297,6 +299,10 @@ end
 
 function Backend:selected_model()
   return self.selected_model_name
+end
+
+function Backend:selected_reasoning_effort()
+  return self.resolved_reasoning_effort
 end
 
 function Backend:defer(callback)
@@ -618,7 +624,6 @@ function Backend:start_handshake()
     },
     capabilities = {
       experimentalApi = self.experimental_api,
-      optOutNotificationMethods = { "item/agentMessage/delta" },
     },
   }, function(result, initialize_error)
     if not result then
@@ -1045,6 +1050,9 @@ function Backend:request(request, callbacks)
     turn_timer = nil,
     final_answer = nil,
     last_agent_message = nil,
+    started_at_ms = nil,
+    first_agent_message_delta_ms = nil,
+    turn_completed_ms = nil,
   }
   local owner = self
   local handle = {}
@@ -1081,6 +1089,7 @@ function Backend:request(request, callbacks)
     end)
     return handle
   end
+  job.started_at_ms = self.now_ms()
   self.jobs[job] = true
   self:start_thread(job)
   return handle
@@ -1133,6 +1142,15 @@ function Backend:handle_notification(message)
       job.turn_id = params.turn.id
       self.jobs_by_turn[job.turn_id] = job
     end
+  elseif method == "item/agentMessage/delta" then
+    if
+      job
+      and job.first_agent_message_delta_ms == nil
+      and type(params) == "table"
+      and type(params.delta) == "string"
+    then
+      job.first_agent_message_delta_ms = math.max(0, math.floor(self.now_ms() - job.started_at_ms))
+    end
   elseif method == "item/started" or method == "item/completed" then
     if job then
       self:collect_item(job, params.item)
@@ -1156,6 +1174,7 @@ function Backend:handle_notification(message)
     end
     job.turn_id = turn.id
     self.jobs_by_turn[turn.id] = job
+    job.turn_completed_ms = math.max(0, math.floor(self.now_ms() - job.started_at_ms))
     if is_list(turn.items) then
       for _, item in ipairs(turn.items) do
         if not self:collect_item(job, item) then
@@ -1196,6 +1215,8 @@ function Backend:handle_notification(message)
         model = self.selected_model_name,
         thread_id = job.thread_id,
         turn_id = job.turn_id,
+        first_agent_message_delta_ms = job.first_agent_message_delta_ms,
+        turn_completed_ms = job.turn_completed_ms,
       },
     })
   elseif method == "error" then

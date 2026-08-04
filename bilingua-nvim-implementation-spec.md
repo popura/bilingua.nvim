@@ -1424,7 +1424,7 @@ require("bilingua").setup({
       codex_app_server = {
         command = { "codex", "app-server" },
         model = "gpt-5.6-luna",
-        reasoning_effort = "max",
+        reasoning_effort = "low",
         require_ephemeral = true,
         strict_isolation = true,
         reject_external_instruction_sources = true,
@@ -3237,6 +3237,9 @@ Tracker: hybrid
 Aligner: generated_id
 Backend: codex_app_server
 Model: <resolved model id>
+Effort: <resolved reasoning effort>
+Last latency: first agent delta <milliseconds> ms / turn completed <milliseconds> ms
+Retries: <count>
 Groups: 42 clean / 1 dirty / 0 conflict / 0 error
 Active tasks: 1
 Auto sync: enabled
@@ -3280,8 +3283,15 @@ closing
 - total_input_chars。
 - total_output_chars。
 - total_latency_ms。
+- retry_count。
+- last_first_agent_message_delta_ms。
+- last_turn_completed_ms。
 
-これらはSession終了時に破棄する。
+`last_first_agent_message_delta_ms`と`last_turn_completed_ms`はbackend requestの
+開始を基準とし、直近に完了したCodex turnの値を保持する。`retry_count`は現在の
+TranslationServiceが実際にscheduleしたretryの累計とする。これらはbackend
+restartによるTranslationService交換時またはSession終了時に破棄する。本文、
+prompt、response、delta本文をメトリクスへ保持してはならない。
 
 ---
 

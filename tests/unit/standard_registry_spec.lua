@@ -58,6 +58,9 @@ test.it("registers and composes every standard extension exactly once", function
       realpath = function(path)
         return path
       end,
+      now_ms = function()
+        return 0
+      end,
       process_factory = process_factory,
     },
   }
@@ -133,6 +136,9 @@ test.it("resolves isolated backend options from the backend-specific table", fun
       end,
       realpath = function(path)
         return path
+      end,
+      now_ms = function()
+        return 0
       end,
     },
   }
@@ -219,6 +225,9 @@ test.it("registers and composes the llama backend without option or resource lea
       end,
       realpath = function(path)
         return path
+      end,
+      now_ms = function()
+        return 0
       end,
     },
   }

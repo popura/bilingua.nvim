@@ -867,8 +867,27 @@ function Session:status_snapshot()
   end
   local backend = self.translator and self.translator.backend
   local model
+  local reasoning_effort
   if backend and type(backend.selected_model) == "function" then
     model = backend:selected_model()
+  end
+  if backend and type(backend.selected_reasoning_effort) == "function" then
+    reasoning_effort = backend:selected_reasoning_effort()
+  end
+  local runtime_metrics = {}
+  if self.translator and type(self.translator.runtime_status) == "function" then
+    local runtime = self.translator:runtime_status()
+    if type(runtime) == "table" then
+      for _, field in ipairs({
+        "retry_count",
+        "last_first_agent_message_delta_ms",
+        "last_turn_completed_ms",
+      }) do
+        if type(runtime[field]) == "number" and runtime[field] >= 0 then
+          runtime_metrics[field] = runtime[field]
+        end
+      end
+    end
   end
   return {
     session_id = self.id,
@@ -887,6 +906,8 @@ function Session:status_snapshot()
     backend = backend and backend.id
       or (self.config.translation and self.config.translation.backend),
     model = model,
+    reasoning_effort = reasoning_effort,
+    runtime_metrics = runtime_metrics,
     groups = groups,
     active_tasks = count_entries(self.active_jobs)
       + count_entries(self.sync_engine and self.sync_engine.active_jobs),

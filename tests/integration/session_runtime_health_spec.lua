@@ -65,6 +65,49 @@ local function edit_source(editor, text)
   })
 end
 
+-- Preconditions: A Session owns a TranslationService whose Codex backend has
+-- resolved its model and reasoning effort, and whose runtime status contains
+-- only numeric timing and retry fields. Prerequisites: status_snapshot is the
+-- sole data source used by BilinguaStatus and must not expose backend objects or
+-- translated text. Verification items: model, effort, first-delta latency,
+-- turn-completed latency, and retry count are copied into the detached snapshot.
+test.it("reports resolved backend and translation runtime metrics", function()
+  local editor = fake_editor.new("Hello", "text")
+  local translator = fake_translation.new(function(task)
+    return translation_result(task, "こんにちは")
+  end)
+  translator.backend = {
+    id = "codex_app_server",
+    selected_model = function()
+      return "gpt-5.6-luna"
+    end,
+    selected_reasoning_effort = function()
+      return "low"
+    end,
+  }
+  translator.runtime_status = function()
+    return {
+      retry_count = 1,
+      last_first_agent_message_delta_ms = 420,
+      last_turn_completed_ms = 610,
+    }
+  end
+  local session = new_session(editor, translator)
+  session:start(function(ok, err)
+    assert(ok, err and err.message)
+  end)
+
+  local status = session:status_snapshot()
+  test.eq("codex_app_server", status.backend)
+  test.eq("gpt-5.6-luna", status.model)
+  test.eq("low", status.reasoning_effort)
+  test.eq(1, status.runtime_metrics.retry_count)
+  test.eq(420, status.runtime_metrics.last_first_agent_message_delta_ms)
+  test.eq(610, status.runtime_metrics.last_turn_completed_ms)
+  test.eq(nil, status.translator)
+  test.eq(nil, status.text)
+end)
+
 -- Preconditions: A ready Session receives a source edit and its TranslationService
 -- returns a valid semantic patch synchronously. Prerequisites: runtime notifications
 -- must cross the SyncEngine/Session boundary without exposing fragments, prompts, or

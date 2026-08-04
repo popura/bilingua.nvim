@@ -1,6 +1,21 @@
 local test = require("tests.testlib")
 local runtime_module = require("bilingua.ui.nvim_runtime")
 
+-- Preconditions: The Neovim runtime is available without starting a backend
+-- process. Prerequisites: Codex latency measurements require a monotonic clock
+-- supplied through backend_runtime rather than direct Neovim access in the
+-- backend adapter. Verification items: now_ms returns finite numeric values and
+-- never decreases across consecutive observations.
+test.it("provides a monotonic backend clock", function()
+  local runtime = runtime_module.new()
+  local first = runtime.backend_runtime.now_ms()
+  local second = runtime.backend_runtime.now_ms()
+
+  test.eq("number", type(first))
+  test.eq(true, first == first and first ~= math.huge and first ~= -math.huge)
+  test.eq(true, second >= first)
+end)
+
 -- Preconditions: A temporary Codex home contains both supported global
 -- instruction filenames and no other Codex state. Prerequisites: Runtime
 -- discovery checks the real filesystem and receives an explicit home path so

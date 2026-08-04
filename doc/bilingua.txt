@@ -307,7 +307,7 @@ mappings.enabled=false で既定 mapping をすべて無効にできます。各
         codex_app_server = {
           command = { "codex", "app-server" },
           model = "gpt-5.6-luna",
-          reasoning_effort = "max",
+          reasoning_effort = "low",
           require_ephemeral = true,
           strict_isolation = true,
           reject_external_instruction_sources = true,
@@ -455,8 +455,8 @@ translation.backends.codex_app_server.command
 translation.backends.codex_app_server.model
 	使用する text model。既定 "gpt-5.6-luna"。
 translation.backends.codex_app_server.reasoning_effort
-	使用する reasoning effort。既定 "max"。推論時間と token 使用量が
-	増える場合があるため、速度を優先する用途では明示的に下げてください。
+	使用する reasoning effort。既定 "low"。複雑な文書で品質を優先する場合は
+	明示的に上げてください。
 translation.backends.codex_app_server.require_ephemeral
 	true なら thread.ephemeral=true の確認を必須にします。
 translation.backends.codex_app_server.strict_isolation
@@ -689,10 +689,17 @@ conflict は自動 merge しません。|:BilinguaUseSource| または
 - source path/buffer、target buffer。
 - source/target language。
 - document adapter、tracker、aligner。
-- backend と解決済み model。
+- backend と解決済み model／reasoning effort。
+- 直近 request の開始から最初の agent message delta および turn completed
+  までの時間。未計測または非対応 backend では unavailable。
+- 現在の TranslationService が実行した retry の累計。backend restart で
+  TranslationService を交換した場合は 0 へ戻る。
 - state ごとの group 数。
 - active task 数。
 - effective automatic sync state: enabled、disabled、paused。
+
+latency と retry count は Session 外へ送信または永続化しません。本文、prompt、
+response、delta 本文は status に保持しません。
 
 health:
   starting	Session/backend の初期化中
@@ -960,7 +967,7 @@ fake app-server を使用します。 >
 <
 
 認証済み Codex へ固定 marker を1回送る live test は明示的 opt-in です。応答
-本文は表示せず、標準 backend の gpt-5.6-luna／max、structured output、backend
+本文は表示せず、標準 backend の gpt-5.6-luna／low、structured output、backend
 cleanup を検証します。外部 service への送信と利用料金が発生し得ます。 >
 
   BILINGUA_RUN_LIVE_CODEX=1 sh scripts/test-live-codex.sh

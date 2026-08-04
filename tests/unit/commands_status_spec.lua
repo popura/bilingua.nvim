@@ -50,3 +50,27 @@ test.it("distinguishes paused automatic synchronization from disabled configurat
   test.eq(true, output:find("Health: degraded", 1, true) ~= nil)
   test.eq(true, output:find("Auto sync: paused", 1, true) ~= nil)
 end)
+
+-- Preconditions: A Session status snapshot contains the resolved Codex effort,
+-- the latest content-free backend latency measurements, and retry count.
+-- Prerequisites: format_status must render only the supplied detached snapshot
+-- and must not inspect backend or TranslationService internals. Verification
+-- items: the operator can verify effort=low, both elapsed values are labeled as
+-- milliseconds from request start, and retries are shown as a numeric total.
+test.it("reports reasoning effort latency and retries", function()
+  local output = commands.format_status(status({
+    reasoning_effort = "low",
+    runtime_metrics = {
+      retry_count = 2,
+      last_first_agent_message_delta_ms = 420,
+      last_turn_completed_ms = 610,
+    },
+  }))
+
+  test.eq(true, output:find("Effort: low", 1, true) ~= nil)
+  test.eq(
+    true,
+    output:find("Last latency: first agent delta 420 ms / turn completed 610 ms", 1, true) ~= nil
+  )
+  test.eq(true, output:find("Retries: 2", 1, true) ~= nil)
+end)

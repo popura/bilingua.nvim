@@ -147,6 +147,46 @@ test.it("retries a transient backend failure with bounded backoff", function()
   test.eq("task:retry:backend", fake_backend.requests[2].request.request_id)
 end)
 
+-- Preconditions: One task retries after a transient backend failure, and the
+-- successful second attempt carries content-free app-server timing metadata.
+-- Prerequisites: retry_count represents retries actually scheduled by this
+-- TranslationService, while latency values describe only the most recently
+-- completed backend turn. Verification items: runtime_status reports one retry,
+-- copies both elapsed values, and returns a detached snapshot that callers cannot
+-- use to mutate the service's retained counters.
+test.it("reports latest backend latency and cumulative retries", function()
+  local service, fake_backend, delays, flush = service_fixture()
+  service:submit(task("task:retry:status"), {
+    on_complete = function() end,
+    on_error = function(err)
+      error(err.message)
+    end,
+    is_current = function()
+      return true
+    end,
+  })
+
+  fake_backend.requests[1].callbacks.on_error(
+    errors.new(errors.codes.BACKEND_UNAVAILABLE, "temporary", true)
+  )
+  delays[1].callback()
+  fake_backend.requests[2].callbacks.on_complete({
+    text = "valid",
+    metadata = {
+      first_agent_message_delta_ms = 420,
+      turn_completed_ms = 610,
+    },
+  })
+  flush()
+
+  local runtime = service:runtime_status()
+  test.eq(1, runtime.retry_count)
+  test.eq(420, runtime.last_first_agent_message_delta_ms)
+  test.eq(610, runtime.last_turn_completed_ms)
+  runtime.retry_count = 99
+  test.eq(1, service:runtime_status().retry_count)
+end)
+
 -- Preconditions: A backend returns parseable transport data that the Codec marks
 -- as format-repairable invalid output on consecutive attempts. Prerequisites:
 -- model-output repair is allowed only once and must not include the prior payload.
