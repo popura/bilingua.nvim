@@ -14,7 +14,7 @@ test.it("resolves isolated defaults and rejects persistent sessions", function()
   test.eq(700, first.sync.debounce_ms)
   test.eq(false, first.layout.open_folds)
   test.eq("codex_app_server", first.translation.backend)
-  test.eq(true, first.translation.backend_options.experimental_api)
+  test.eq(true, first.translation.backends.codex_app_server.experimental_api)
   first.sync.debounce_ms = 1
 
   local second = assert(config.resolve({}))
@@ -33,27 +33,29 @@ end)
 test.it("pins the default Codex model and effort for live verification", function()
   local resolved = assert(config.resolve({}))
 
-  test.eq("gpt-5.6-luna", resolved.translation.backend_options.model)
-  test.eq("max", resolved.translation.backend_options.reasoning_effort)
+  test.eq("gpt-5.6-luna", resolved.translation.backends.codex_app_server.model)
+  test.eq("max", resolved.translation.backends.codex_app_server.reasoning_effort)
 end)
 
--- Preconditions: Strict isolation is requested while the app-server experimental
--- API is disabled. Prerequisites: restricted filesystem reads now require the
--- permission-profile fields gated by that capability. Verification items: config
--- resolution fails before backend startup and names the incompatible option.
-test.it("requires the experimental API for strict Codex isolation", function()
-  local resolved, err = config.resolve({
+-- Preconditions: Strict isolation is requested while the Codex experimental API
+-- is disabled. Prerequisites: config.lua owns backend namespace shape but concrete
+-- backends own their option semantics. Verification items: resolution preserves the
+-- contradictory values for the Codex constructor and returns no config error.
+test.it("defers Codex option semantics to the selected backend", function()
+  local resolved, resolve_error = config.resolve({
     translation = {
-      backend_options = {
-        strict_isolation = true,
-        experimental_api = false,
+      backends = {
+        codex_app_server = {
+          strict_isolation = true,
+          experimental_api = false,
+        },
       },
     },
   })
 
-  test.eq(nil, resolved)
-  test.eq("E_INVALID_ARGUMENT", err.code)
-  assert(err.message:find("experimental_api", 1, true), err.message)
+  test.eq(nil, resolve_error)
+  test.eq(true, resolved.translation.backends.codex_app_server.strict_isolation)
+  test.eq(false, resolved.translation.backends.codex_app_server.experimental_api)
 end)
 
 -- Preconditions: Callers provide wrong primitive types or out-of-range values for
@@ -73,10 +75,6 @@ test.it("validates every documented scalar configuration category", function()
     { { stop = { timeout_ms = 0 } }, "stop.timeout_ms" },
     { { documents = { fallback_to_plaintext = "yes" } }, "documents.fallback_to_plaintext" },
     { { translation = { backend = "" } }, "translation.backend" },
-    {
-      { translation = { backend_options = { require_ephemeral = "yes" } } },
-      "translation.backend_options.require_ephemeral",
-    },
     { { ui = { signs = "yes" } }, "ui.signs" },
     { { debug = { enabled = "yes" } }, "debug.enabled" },
   }
@@ -107,23 +105,25 @@ test.it("validates filetype aliases against configured routes", function()
   assert(err.message:find("documents.aliases.md", 1, true), err.message)
 end)
 
--- Preconditions: A caller replaces the default two-part Codex command with one
--- executable, then supplies an empty command in a separate resolution request.
--- Prerequisites: Array-valued options are atomic values rather than numeric-keyed
--- maps, and invalid replacements must not inherit omitted default elements.
--- Verification items: the one-element array is preserved exactly and the empty
--- array fails validation with E_INVALID_ARGUMENT.
+-- Preconditions: Callers replace the default two-part Codex command with one
+-- executable and with an empty list in separate resolution requests.
+-- Prerequisites: array-valued options replace atomically, while the concrete Codex
+-- backend—not config.lua—validates whether the resulting list can start a process.
+-- Verification items: both replacements survive exactly without inherited elements.
 test.it("replaces command arrays without retaining default elements", function()
   local resolved = assert(config.resolve({
-    translation = { backend_options = { command = { "custom-server" } } },
+    translation = {
+      backends = { codex_app_server = { command = { "custom-server" } } },
+    },
   }))
-  test.eq({ "custom-server" }, resolved.translation.backend_options.command)
+  test.eq({ "custom-server" }, resolved.translation.backends.codex_app_server.command)
 
-  local invalid, err = config.resolve({
-    translation = { backend_options = { command = {} } },
-  })
-  test.eq(nil, invalid)
-  test.eq("E_INVALID_ARGUMENT", err.code)
+  local empty = assert(config.resolve({
+    translation = {
+      backends = { codex_app_server = { command = {} } },
+    },
+  }))
+  test.eq({}, empty.translation.backends.codex_app_server.command)
 end)
 
 -- Preconditions: A caller supplies one valid custom Lua pattern, while separate

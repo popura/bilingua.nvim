@@ -20,20 +20,52 @@ local REPLACEMENT_FIELDS = {
   language = true,
 }
 
-local function schema()
+local function schema(task)
+  local task_id_schema = { type = "string" }
+  local destination_side_schema = { type = "string", enum = { "source", "target" } }
+  local correspondence_schema = { type = "array", items = { type = "string" } }
+
+  if type(task) == "table" then
+    if type(task.task_id) == "string" and task.task_id ~= "" then
+      task_id_schema.const = task.task_id
+    end
+    if task.edited_side == "source" then
+      destination_side_schema = { type = "string", const = "target" }
+    elseif task.edited_side == "target" then
+      destination_side_schema = { type = "string", const = "source" }
+    end
+
+    local edited_ids = json.array()
+    local seen_ids = {}
+    local edited_units = type(task.edited_after) == "table" and task.edited_after.units or nil
+    if common.task_list(edited_units) then
+      for _, unit in ipairs(edited_units) do
+        if type(unit.unit_id) == "string" and unit.unit_id ~= "" and not seen_ids[unit.unit_id] then
+          seen_ids[unit.unit_id] = true
+          edited_ids[#edited_ids + 1] = unit.unit_id
+        end
+      end
+    end
+    if #edited_ids > 0 then
+      correspondence_schema.items.enum = edited_ids
+      correspondence_schema.minItems = 1
+      correspondence_schema.maxItems = #edited_ids
+    end
+  end
+
   return {
     type = "object",
     properties = {
       schema_version = { type = "integer", const = 1 },
-      task_id = { type = "string" },
-      destination_side = { type = "string", enum = { "source", "target" } },
+      task_id = task_id_schema,
+      destination_side = destination_side_schema,
       replacement_units = {
         type = "array",
         items = {
           type = "object",
           properties = {
             local_id = { type = "string" },
-            corresponds_to_edited_unit_ids = { type = "array", items = { type = "string" } },
+            corresponds_to_edited_unit_ids = correspondence_schema,
             kind = { type = "string" },
             content_text = { type = "string" },
             language = { type = { "string", "null" } },
@@ -67,8 +99,8 @@ function SemanticPatchJsonV1.new(options)
   }, SemanticPatchJsonV1)
 end
 
-function SemanticPatchJsonV1:response_schema(_)
-  return schema()
+function SemanticPatchJsonV1:response_schema(task)
+  return schema(task)
 end
 
 local function valid_fragment(fragment)
@@ -154,10 +186,20 @@ function SemanticPatchJsonV1:encode(task, backend_capabilities)
   local instruction = table.concat({
     "Revise the destination-language baseline minimally so that it reflects only",
     "semantic and structural changes between the edited-side BEFORE and AFTER data.",
+    "Translate content newly present in AFTER into the destination language and include it.",
+    "Copy edited-side AFTER unit_id values exactly into corresponds_to_edited_unit_ids; never invent or transform IDs.",
+    "Do not copy the destination baseline unchanged when the edit changes its meaning.",
     "Preserve destination wording, tone, terminology, and unaffected content.",
     "Return replacement units for the whole mapping group, not a diff and not markup.",
   }, "\n")
-  return common.normalized_request(self, task, backend_capabilities, instruction, data, schema())
+  return common.normalized_request(
+    self,
+    task,
+    backend_capabilities,
+    instruction,
+    data,
+    schema(task)
+  )
 end
 
 function SemanticPatchJsonV1:decode(raw_response, task, backend_capabilities)
@@ -176,7 +218,7 @@ function SemanticPatchJsonV1:decode(raw_response, task, backend_capabilities)
     "Semantic patch response"
   )
   if not fields_ok then
-    return common.invalid(fields_error)
+    return common.invalid_format(fields_error)
   end
   local expected_side = task.edited_side == "source" and "target" or "source"
   if
@@ -207,7 +249,7 @@ function SemanticPatchJsonV1:decode(raw_response, task, backend_capabilities)
       ("Semantic replacement %d"):format(ordinal)
     )
     if not replacement_ok then
-      return common.invalid(replacement_error)
+      return common.invalid_format(replacement_error)
     end
     if
       type(replacement.local_id) ~= "string"

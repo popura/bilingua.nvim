@@ -1,4 +1,4 @@
-*bilingua.txt*	Bilingual source/target editing with Codex app-server
+*bilingua.txt*	Bilingual source/target editing with Codex or llama-server
 
 ==============================================================================
 Bilingua.nvim						*bilingua*
@@ -6,9 +6,10 @@ Bilingua.nvim						*bilingua*
 Bilingua.nvim は、原文 (source) と日本語訳 (target) を並べ、双方の編集を
 mapping group 単位で同期する非永続の Neovim plugin です。
 
-標準 backend は Codex app-server です。Session の開始時に target scratch
-buffer を作成し、停止時に plugin 所有の buffer、window、extmark、autocmd、
-timer、mapping graph、task、backend process を解放します。
+標準 backend は Codex app-server と local llama-server です。既定は Codex
+app-server です。Session の開始時に target scratch buffer を作成し、停止時に
+plugin 所有の buffer、window、extmark、autocmd、timer、mapping graph、task、
+backend resource を解放します。利用者所有の llama-server は停止しません。
 
 CONTENTS						*bilingua-contents*
 
@@ -33,19 +34,26 @@ CONTENTS						*bilingua-contents*
 1. Requirements					*bilingua-requirements*
 
 - Neovim 0.10 以上。
-- Codex CLI 0.146.0 以上。
-- Codex CLI で利用可能な認証と text input 対応 model。
+- Codex backend には Codex CLI 0.146.0 以上、利用可能な認証、text input
+  対応 model。
+- llama-server backend には curl、外部で起動した llama-server、対応 chat
+  template を持つ instruct model。
 - 外部 Lua runtime dependency はありません。
 
 0.146.0 は本 project が app-server の生成 schema を確認した最低版です。
 protocol は Codex の版に依存するため、更新時は
 |bilingua-codex-compatibility| の検査を実行してください。
+llama-server backend の互換基準と起動方法は |bilingua-llama-server| を参照して
+ください。
+
 
 準備状況の確認例: >
 
   codex --version
   codex login
   codex app-server --help
+  llama-server --version
+  curl --version
 <
 
 ==============================================================================
@@ -295,17 +303,29 @@ mappings.enabled=false で既定 mapping をすべて無効にできます。各
       initial_codec = "initial_translation_json_v1",
       patch_codec = "semantic_patch_json_v1",
       timeout_ms = 120000,
-      backend_options = {
-        command = { "codex", "app-server" },
-        model = "gpt-5.6-luna",
-        reasoning_effort = "max",
-        require_ephemeral = true,
-        strict_isolation = true,
-        reject_external_instruction_sources = true,
-        include_platform_default_reads = false,
-        experimental_api = true,
-        request_timeout_ms = 10000,
-        shutdown_timeout_ms = 500,
+      backends = {
+        codex_app_server = {
+          command = { "codex", "app-server" },
+          model = "gpt-5.6-luna",
+          reasoning_effort = "max",
+          require_ephemeral = true,
+          strict_isolation = true,
+          reject_external_instruction_sources = true,
+          experimental_api = true,
+          request_timeout_ms = 10000,
+          shutdown_timeout_ms = 500,
+        },
+        llama_server = {
+          endpoint = "http://127.0.0.1:8080",
+          model = "auto",
+          curl_command = { "curl" },
+          open_timeout_ms = 30000,
+          health_poll_interval_ms = 250,
+          request_timeout_ms = 0,
+          structured_output = "json_schema",
+          disable_thinking = true,
+          max_response_bytes = 16 * 1024 * 1024,
+        },
       },
     },
 
@@ -414,6 +434,7 @@ documents.routes
 	解決します。各 component は registry に登録済みである必要があります。
 
 						*bilingua-config-translation*
+                                *bilingua-translation-backends*
 translation.service
 	TranslationService factory ID。
 translation.backend
@@ -422,38 +443,146 @@ translation.initial_codec / translation.patch_codec
 	初期翻訳／incremental semantic patch の TaskCodec factory ID。
 translation.timeout_ms
 	turn／task timeout。正の整数。
-translation.backend_options.command
+translation.backends
+        backend ID ごとの option table。標準 ID は "codex_app_server" と
+        "llama_server" です。選択した backend の table だけを Session ごとに
+        copy し、他 backend の option は混入しません。custom backend ID と option
+        key も登録できます。
+
+                        *bilingua-translation-backend-options*
+translation.backends.codex_app_server.command
 	non-empty string の argv list。shell 文字列ではありません。
-translation.backend_options.model
+translation.backends.codex_app_server.model
 	使用する text model。既定 "gpt-5.6-luna"。
-translation.backend_options.reasoning_effort
+translation.backends.codex_app_server.reasoning_effort
 	使用する reasoning effort。既定 "max"。推論時間と token 使用量が
 	増える場合があるため、速度を優先する用途では明示的に下げてください。
-translation.backend_options.require_ephemeral
+translation.backends.codex_app_server.require_ephemeral
 	true なら thread.ephemeral=true の確認を必須にします。
-translation.backend_options.strict_isolation
+translation.backends.codex_app_server.strict_isolation
 	true なら backend instance ごとの permission profile と isolated cwd を
 	使い、各 task で isolation directory だけを read-only workspace root に
 	します。
 	false は Codex 標準 readOnly sandbox に戻り、directory 外も読み取り
 	可能になるため、通常は変更しないでください。
-translation.backend_options.reject_external_instruction_sources
+translation.backends.codex_app_server.reject_external_instruction_sources
 	true なら instructionSources を document 送信前に検証します。isolated
 	cwd 内、または Bilingua 初期化時に検出した Codex user-level
 	AGENTS.override.md／AGENTS.md と realpath で同一の file だけを許可し、
 	それ以外を拒否します。
-translation.backend_options.include_platform_default_reads
-	旧設定との互換性のための option。true は strict_isolation=true と
-	同時には指定できません。非 strict mode の標準 readOnly sandbox を
-	狭めるものではありません。
-translation.backend_options.experimental_api
+translation.backends.codex_app_server.experimental_api
 	initialize capability の experimentalApi。既定 true。
 	strict_isolation=true では permission profile API に必要なため、false と
 	同時には指定できません。
-translation.backend_options.request_timeout_ms
+translation.backends.codex_app_server.request_timeout_ms
 	initialize/model/thread/turn start RPC の timeout。
-translation.backend_options.shutdown_timeout_ms
+translation.backends.codex_app_server.shutdown_timeout_ms
 	backend shutdown 後に process を強制終了するまでの待機時間。
+
+                                *bilingua-llama-server*
+llama-server prerequisites ~
+llama backend は次を必要とします。
+
+- PATH 上の curl。
+- 利用者が外部で起動した llama-server。
+- 対応 chat template を持つ instruct model。
+
+Bilingua は server や model を download／起動しません。model 固有の GPU
+option や context size を固定しない最小起動例: >
+
+  llama-server \
+    -m /path/to/model.gguf \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --alias local-translator
+<
+
+選択例: >
+
+  require("bilingua").setup({
+    translation = {
+      backend = "llama_server",
+      backends = {
+        llama_server = {
+          endpoint = "http://127.0.0.1:8080",
+          model = "auto",
+          structured_output = "json_schema",
+          disable_thinking = true,
+        },
+      },
+    },
+  })
+<
+
+構造化出力は OpenAI-compatible な nested 形式
+response_format.json_schema.schema を使います。2026-08-04 時点の
+llama.cpp source、GBNF guide、および実際の loopback server で確認しました。
+https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-common.cpp
+https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md
+
+translation.backends.llama_server.endpoint
+        HTTP loopback authority。127.0.0.1、localhost、[::1] だけを受理し、
+        path、query、fragment、userinfo、remote host、TLS を拒否します。
+        既定 "http://127.0.0.1:8080"。認証 header と redirect は使いません。
+translation.backends.llama_server.model
+        llama-server へ渡す model ID。既定 "auto"。auto は /v1/models に
+        non-empty ID がちょうど一つある場合だけ採用します。複数 model の
+        server では ID を明示してください。
+translation.backends.llama_server.curl_command
+        curl の argv prefix。既定 {"curl"}。shell 文字列ではありません。
+translation.backends.llama_server.open_timeout_ms
+        health polling と model discovery 全体の timeout。正の整数。
+        既定 30000。
+translation.backends.llama_server.health_poll_interval_ms
+        /health が loading の HTTP 503 を返した後の poll 間隔。正の整数で、
+        open_timeout_ms 以下。既定 250。
+translation.backends.llama_server.request_timeout_ms
+        一つの Chat Completions request の timeout。0 は
+        translation.timeout_ms を使います。既定 0。
+translation.backends.llama_server.structured_output
+        "json_schema" または "prompt_only"。既定 "json_schema"。
+        json_schema は response_format.json_schema.schema と prompt の両方へ
+        Schema を入れます。prompt_only は API parameter を省略し、prompt
+        だけへ Schema を入れます。
+translation.backends.llama_server.disable_thinking
+        true なら reasoning_effort="none" と
+        chat_template_kwargs.enable_thinking=false を request に加えます。
+        既定 true。実際の挙動は model の chat template に依存します。
+translation.backends.llama_server.max_response_bytes
+        curl stdout の byte 上限。正の整数。既定 16 MiB。
+
+llama-server errors and remedies ~
+  E_BACKEND_NOT_FOUND
+        curl を起動できません。PATH と curl_command を確認します。
+  E_BACKEND_UNAVAILABLE
+        connection refused、network failure、HTTP 5xx。server process、host、
+        port を確認します。一時的失敗だけ retry 対象です。
+  E_BACKEND_TIMEOUT
+        open または request timeout。model loading 中なら open_timeout_ms、
+        inference 中なら model context、prediction limit、task size を確認します。
+  E_BACKEND_INIT
+        endpoint／option が不正、または model="auto" で ID が一つに決まり
+        ません。/v1/models を確認し、必要なら model ID を明示します。
+  E_BACKEND_PROTOCOL
+        health、model list、Chat Completions envelope が不正、response が途中で
+        切れた、または Schema request が拒否されました。llama.cpp version と
+        server log を確認し、Schema 非対応時は prompt_only を試します。
+  E_BACKEND_TOOL_ATTEMPT
+        model が tool call を返しました。tool は送信していないため適用せず、
+        model と chat template を確認します。
+  E_INVALID_OUTPUT
+        codec JSON、unit ID、destination、placeholder、出力上限の検証失敗。
+        model 能力、chat template、task size を確認します。
+
+llama-server privacy and lifecycle ~
+endpoint は loopback に限定しますが、同一 host 内の process と server 自体は
+Bilingua の信頼境界外です。文書の機密性、model license、model file の権限、
+server の log／cache／telemetry、CPU／GPU／memory は利用者が管理してください。
+Codex の permission profile は llama-server process へ適用されません。
+
+|:BilinguaStop| と |:BilinguaStop!| は active curl request と plugin 所有 timer
+を cancel します。shutdown endpoint は呼ばず、利用者所有の llama-server
+process は Session 終了後も稼働を続けます。
 
 						*bilingua-config-ui*
 ui.signs / ui.virtual_text
@@ -477,8 +606,8 @@ debug.ring_size
 	backend stderr の in-memory ring buffer 最大件数。正の整数。
 
 setup() は型・値域を検証します。未知の key は typo 検出のため警告します。
-documents.routes、documents.aliases、translation.backend_options は
-extension 用の動的 key を受け入れます。
+documents.routes、documents.aliases、translation.backends は extension 用の
+動的 key を受け入れます。
 
 ==============================================================================
 7. Document handling					*bilingua-documents*
@@ -712,7 +841,7 @@ Bilingua.nvim は source/target を信頼できない document data として扱
 しません。TaskCodec は固定 system/developer instruction と JSON document
 data を分離します。
 
-標準 strict isolation ~
+Codex strict isolation ~
 backend instance ごとに隔離資源を作り、各 translation task の ephemeral
 thread で次の制約を適用します。
 
@@ -746,14 +875,22 @@ instruction file が存在すると、Codex app-server はその内容を model
 instruction として読み込む場合があります。Bilingua は file の内容を変更
 しません。翻訳に影響し得るため、利用者はこれらの file も確認してください。
 
+llama-server trust boundary ~
+llama backend は tool 定義を送らず、endpoint を HTTP loopback に限定します。
+ただし Codex の permission profile、isolated cwd、network off は利用者所有の
+llama-server process へ適用されません。同一 host 上の他 process、server、
+model、chat template、model file は Bilingua の信頼境界外です。server と
+model file の権限を設定し、不要な interface へ bind しないでください。
+詳細は |bilingua-llama-server| を参照してください。
+
 data transfer and retention ~
 Codex app-server は local process ですが、選択 model によって document
 content が外部 OpenAI service へ送信される場合があります。plugin は機密
 情報を自動検出・匿名化しません。送信前に内容と backend を確認してください。
 
-plugin が state を永続化しないことは、Codex、OpenAI、将来登録する HTTP/
-local-model provider が独自に request、log、cache を保持しないことを保証
-しません。provider の privacy/data retention policy は別に確認してください。
+plugin が state を永続化しないことは、Codex、OpenAI、llama-server、model、
+または custom provider が独自に request、log、cache、telemetry を保持しない
+ことを保証しません。各 provider と model の方針を別に確認してください。
 
 credentials and logs ~
 API key を setup table、document、TranslationTask metadata、error、target
@@ -777,6 +914,8 @@ target buffer:
 plugin は sidecar、target file、mapping cache、SQLite database、target の
 persistent undo、swap/backup、prompt/response transcript、resume file を
 作りません。Codex 用一時 directory は backend close 時に再帰削除します。
+llama backend は client 側 curl と timer だけを所有し、外部 llama-server の
+process、model、log、cache を削除または停止しません。
 
 normal stop では active work の完了と必要な target-to-source sync を待ち、
 error/conflict が残れば target を維持して停止を中止します。force stop、
@@ -811,11 +950,12 @@ Codex app-server schema の確認: >
   関連 field を確認する。
 - 終了時に一時 directory を削除する。
 
-通常 test は Codex、認証、network を使わず、fake app-server を使用します。 >
+通常 test は Codex、llama-server、認証、network を使わず、fake transport と
+fake app-server を使用します。 >
 
   sh scripts/test.sh
-  stylua --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
-  luacheck lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
+  stylua --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua scripts/live_llama_test.lua scripts/live_llama_session_test.lua
+  luacheck lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua scripts/live_llama_test.lua scripts/live_llama_session_test.lua
   nvim --headless -u NONE -c "helptags doc" -c "qa!"
 <
 
@@ -824,6 +964,27 @@ Codex app-server schema の確認: >
 cleanup を検証します。外部 service への送信と利用料金が発生し得ます。 >
 
   BILINGUA_RUN_LIVE_CODEX=1 sh scripts/test-live-codex.sh
+<
+
+llama live test は利用者が事前に起動した loopback server に対する明示的
+opt-in です。server／model を download または起動しません。既存 codec で
+初回翻訳と semantic patch を一件ずつ行い、protected placeholder、timeout、
+cleanup と close 後の health を検証します。response content と model ID は
+表示しません。 >
+
+  BILINGUA_RUN_LIVE_LLAMA=1 \
+  BILINGUA_LLAMA_SERVER_URL=http://127.0.0.1:8080 \
+  BILINGUA_LLAMA_SERVER_MODEL=auto \
+  sh scripts/test-live-llama.sh
+<
+
+公開 Ex command、双方向 sync、status、active request の force stop まで確認する
+session smoke test も同じ opt-in と固定の合成 plaintext を使います。 >
+
+  BILINGUA_RUN_LIVE_LLAMA=1 \
+  BILINGUA_LLAMA_SERVER_URL=http://127.0.0.1:8080 \
+  BILINGUA_LLAMA_SERVER_MODEL=auto \
+  sh scripts/test-live-llama-session.sh
 <
 
 別の Neovim executable では BILINGUA_NVIM=/absolute/path/to/nvim も指定します。
@@ -848,8 +1009,8 @@ BILINGUA_BENCHMARK_PAYLOAD_BYTES を小さくできます。
 CI は Neovim 0.10.4、stable、allowed-failure の nightly を対象にします。
 format、lint、unit/contract/integration、fake app-server、25 回の resource
 cleanup stress test を実行します。最新 Codex schema は週次・手動で確認
-します。live Codex translation test は認証、model availability、network に
-依存するため通常 CI では実行しません。
+します。Codex と llama の live test は認証、server、model availability、
+network に依存するため通常 CI では実行しません。
 
 ==============================================================================
 vim:tw=78:ts=8:noet:ft=help:norl:

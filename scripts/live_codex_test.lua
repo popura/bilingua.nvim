@@ -46,7 +46,7 @@ local function run()
   if not resolved_config then
     fail(error_summary("Default configuration failed", config_error))
   end
-  local backend_defaults = resolved_config.translation.backend_options
+  local backend_defaults = resolved_config.translation.backends.codex_app_server
   local options = copy_table(runtime.backend_runtime)
   local create_tempdir = options.tempdir_factory
   options.tempdir_factory = function()
