@@ -24,11 +24,11 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           version: 2.5.2
-          args: --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
+          args: --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua scripts/live_llama_test.lua scripts/live_llama_session_test.lua
       - name: Luacheck
         uses: lunarmodules/luacheck@v1
         with:
-          args: lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
+          args: lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua scripts/live_llama_test.lua scripts/live_llama_session_test.lua
 
   test:
     if: github.event_name != 'schedule'

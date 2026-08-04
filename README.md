@@ -1,6 +1,6 @@
 # Bilingua.nvim
 
-Bilingua.nvim は、Neovim で原文（source）と日本語訳（target）を同時に編集したい利用者向けに、Codex app-server による初期翻訳と双方向同期を一つの編集画面へまとめるプラグインです。
+Bilingua.nvim は、Neovim で原文（source）と日本語訳（target）を同時に編集したい利用者向けに、Codex app-server または利用者が管理する local llama-server による初期翻訳と双方向同期を一つの編集画面へまとめるプラグインです。既定 backend は Codex のままです。
 
 [![継続的インテグレーション（CI）](https://github.com/popura/bilingua.nvim/actions/workflows/ci.yml/badge.svg)](https://github.com/popura/bilingua.nvim/actions/workflows/ci.yml)
 ![Neovim 0.10 以上](https://img.shields.io/badge/Neovim-0.10%2B-57A143?logo=neovim&logoColor=white)
@@ -10,7 +10,7 @@ Bilingua.nvim は、Neovim で原文（source）と日本語訳（target）を�
 
 ## デモ
 
-次の例は、英語の `README.md` を日本語 target と並べ、現在位置の編集を同期して Session を終了する最小操作です。Session は、一組の source／target buffer、対応関係、同期 task、backend のライフサイクルを管理する実行単位です。実行前に、Codex へ送る文書内容と利用料金を確認してください。
+次の例は、英語の `README.md` を日本語 target と並べ、現在位置の編集を同期して Session を終了する最小操作です。Session は、一組の source／target buffer、対応関係、同期 task、backend のライフサイクルを管理する実行単位です。既定の Codex backend を使う場合は、送信する文書内容と利用料金を実行前に確認してください。
 
 ```sh
 cd /path/to/your/project
@@ -35,8 +35,9 @@ Neovim で次を実行します。
 - **Plaintext／Markdown 対応**: 段落、見出し、list item、blockquote paragraph を翻訳します。code block、table、数式などは opaque unit（inference backend を経由して raw text を保持する unit）として扱い、raw text を反対側へ複製する mirror を行います。
 - **protected token 検証**: URL、inline code、placeholder、link destination などを一時 placeholder 化し、model output を完全一致で検証して復元します。
 - **手動 conflict 解決**: 両側編集や曖昧な対応を conflict として表示し、利用者が source または target を正として選択します。
+- **二つの標準 backend**: 既定の Codex app-server と、loopback 上で利用者が運用する local llama-server を選べます。
 - **厳格な Codex 実行分離**: ephemeral thread、隔離用一時 directory、permission profile、network off、空の environments、tool item の中断を組み合わせます。
-- **一時的な target**: target は scratch buffer として動作し、Session 終了時に buffer、window、task、backend process、一時 directory を解放します。
+- **一時的な target**: target は scratch buffer として動作し、Session 終了時に buffer、window、task と plugin 所有の backend 資源を解放します。外部 llama-server process は停止しません。
 - **状態表示と復旧**: sign／virtual text、`:BilinguaStatus`、`:BilinguaRetry`、`:BilinguaRestartBackend` で状態確認と復旧を行います。
 
 ## 動作要件
@@ -44,16 +45,15 @@ Neovim で次を実行します。
 | 項目 | 要件 |
 |---|---|
 | Neovim | 0.10 以上 |
-| Codex CLI | 0.146.0 以上 |
-| Codex 認証 | `codex login` で利用可能な認証 |
-| Model | text input 対応 model。既定は `gpt-5.6-luna` |
-| Reasoning effort | 既定は `max` |
+| Codex backend | Codex CLI 0.146.0 以上、`codex login` で利用可能な認証、text input 対応 model |
+| Codex model／reasoning effort | 既定は `gpt-5.6-luna`／`max` |
+| llama-server backend | `curl`、外部で起動した llama-server、対応 chat template を持つ instruct model |
 | Lua runtime | Neovim 同梱 runtime |
 | 外部 Lua dependency | なし |
 | Plugin manager | Dein.vim |
 | OS | <要確認: 対応 OS と検証済み環境> |
 
-準備状況を確認します。`<CODEX_CREDENTIAL>` は説明用の認証情報 placeholder であり、実際の認証値は Codex CLI の対話画面へ入力します。
+既定の Codex backend の準備状況を確認します。`<CODEX_CREDENTIAL>` は説明用の認証情報 placeholder であり、実際の認証値は Codex CLI の対話画面へ入力します。
 
 ```sh
 nvim --version
@@ -247,15 +247,73 @@ require("bilingua").setup({
     debounce_ms = 700,
   },
   translation = {
-    backend_options = {
-      model = "gpt-5.6-luna",
-      reasoning_effort = "max",
-      strict_isolation = true,
-      experimental_api = true,
+    backend = "codex_app_server",
+    backends = {
+      codex_app_server = {
+        model = "gpt-5.6-luna",
+        reasoning_effort = "max",
+        strict_isolation = true,
+        experimental_api = true,
+      },
     },
   },
 })
 ```
+
+
+### Local llama-server backend
+
+Bilingua.nvim には `codex_app_server` と `llama_server` の二つの標準 backend があります。既定は `codex_app_server` です。llama-server を使う場合、Bilingua.nvim は server や model を download／起動せず、利用者が外部で管理している process へ `curl` で接続します。
+
+実行には `curl`、llama-server、および対応 chat template を持つ instruct model が必要です。次の例では、model 固有の GPU option や context size を指定していません。
+
+```sh
+llama-server \
+  -m /path/to/model.gguf \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --alias local-translator
+```
+
+Neovim 側で backend を選択します。
+
+```lua
+require("bilingua").setup({
+  translation = {
+    backend = "llama_server",
+    backends = {
+      llama_server = {
+        endpoint = "http://127.0.0.1:8080",
+        model = "auto",
+        structured_output = "json_schema",
+        disable_thinking = true,
+      },
+    },
+  },
+})
+```
+
+- `endpoint` は `http` の loopback host（`127.0.0.1`、`localhost`、`[::1]`）だけを受理します。remote host、TLS、認証 header、redirect には対応しません。
+- `model = "auto"` は `/v1/models` に有効な model ID がちょうど一つある場合だけ、その ID を採用します。複数 model を公開する server では ID を明示してください。
+- `structured_output = "json_schema"` は Schema を llama.cpp の `response_format` と prompt の両方へ渡します。server または model が拒否する場合、`"prompt_only"` は API parameter を省略して Schema を prompt だけへ含めます。
+- `disable_thinking = true` は既定値です。`reasoning_effort = "none"` と `chat_template_kwargs.enable_thinking = false` を request に加えます。実際の挙動は model の chat template にも依存します。
+- `:BilinguaStop` と `:BilinguaStop!` は active curl request と timer を解放しますが、利用者所有の llama-server process は停止しません。
+
+`translation.backend_options` は旧設定との互換用です。選択中 backend の `translation.backends.<id>` に重ねられ、同じ key では `backend_options` の値が優先されます。新しい設定では backend 間の混入を避けるため `translation.backends.codex_app_server` または `translation.backends.llama_server` を使用してください。
+
+構造化出力は OpenAI-compatible な nested 形式 `response_format.json_schema.schema` を使用します。2026-08-04 時点の [llama.cpp server source](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-common.cpp) と [GBNF guide](https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md) を照合し、実際の loopback server でも確認しています。llama.cpp の更新で API や chat template の挙動が変わる可能性があります。
+
+| 症状 | 確認事項 |
+|---|---|
+| connection refused | llama-server process、`--host`、`--port`、`endpoint` |
+| health 503 | model loading の完了、`open_timeout_ms` |
+| model auto resolution failure | `/v1/models` の ID 数、明示的な `model` |
+| JSON Schema rejection | llama.cpp version、`structured_output = "prompt_only"` |
+| JSON 前に reasoning が出る | `disable_thinking`、model の chat template |
+| response truncated | model context、server の prediction limit、task batch size |
+| placeholder mismatch | model 能力、prompt、task size |
+
+local 実行でも、model の license と利用条件、文書内の機密情報、CPU／GPU／memory などの hardware resource は利用者が管理してください。Bilingua.nvim は server 側の request log、cache、model telemetry を制御しません。
 
 ### 主要設定
 
@@ -276,9 +334,9 @@ require("bilingua").setup({
 | `sync.conflict_policy` | `"manual"` | conflict の解決方針 |
 | `stop.sync_pending` | `true` | 正常停止時の target-to-source 同期 |
 | `translation.backend` | `"codex_app_server"` | inference backend |
-| `translation.backend_options.model` | `"gpt-5.6-luna"` | Codex model |
-| `translation.backend_options.reasoning_effort` | `"max"` | reasoning effort |
-| `translation.backend_options.strict_isolation` | `true` | Codex 実行分離 |
+| `translation.backends.codex_app_server.model` | `"gpt-5.6-luna"` | Codex model |
+| `translation.backends.codex_app_server.reasoning_effort` | `"max"` | Codex reasoning effort |
+| `translation.backends.codex_app_server.strict_isolation` | `true` | Codex 実行分離 |
 | `documents.fallback_to_plaintext` | `true` | route 解決時の Plaintext fallback |
 | `ui.notify_backend` | `true` | 正規化済み backend error の通知 |
 | `ui.show_progress` | `true` | 初期翻訳 batch の進捗表示 |
@@ -318,7 +376,9 @@ require("bilingua").setup({
 - Codex app-server は選択 model に応じて document content を外部 OpenAI service へ送信する場合があります。Bilingua.nvim の non-persistence は provider の retention、logging、cache を保証しません。
 - Codex home の `AGENTS.override.md`／`AGENTS.md` は model instruction に影響する場合があります。利用者は内容を確認してください。
 - 既定の `gpt-5.6-luna`／`max` は推論時間と token 使用量を増やす場合があります。
-- live Codex test は通常 CI に含まれません。
+- llama-server backend は loopback HTTP 専用です。remote endpoint、TLS、認証、server process の起動／停止を扱いません。
+- llama.cpp version、model 能力、chat template により Schema 制約や翻訳品質が変わります。
+- Codex／llama の live test は通常 CI に含まれません。
 - 対応 OS と OS ごとの検証状況は `<要確認: 対応 OS と検証済み環境>` です。
 
 ## 開発手順
@@ -332,7 +392,9 @@ repository root を作業 directory として使います。通常 test は fake
 | Neovim 0.10 以上 | unit／contract／integration test |
 | StyLua 2.5.2 | format check |
 | Luacheck | lint |
-| Codex CLI 0.146.0 以上 | schema check と opt-in live test |
+| Codex CLI 0.146.0 以上 | Codex schema check と opt-in live test |
+| curl | llama-server HTTP transport と opt-in live test |
+| llama-server | 利用者が起動した local live-test server |
 | 開発用 package manager | <要確認: 対応 OS ごとの推奨導入コマンド> |
 
 ```sh
@@ -343,8 +405,8 @@ cd "$(git rev-parse --show-toplevel)"
 
 ```sh
 sh scripts/test.sh
-stylua --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
-luacheck lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua
+stylua --check lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua scripts/live_llama_test.lua scripts/live_llama_session_test.lua
+luacheck lua plugin tests scripts/benchmark.lua scripts/benchmark_runner.lua scripts/live_codex_test.lua scripts/live_llama_test.lua scripts/live_llama_session_test.lua
 nvim --headless -u NONE -c "helptags doc" -c "qa!"
 ```
 
@@ -384,17 +446,48 @@ BILINGUA_RUN_LIVE_CODEX=1 sh scripts/test-live-codex.sh
 LIVE_CODEX_TEST passed model=gpt-5.6-luna effort=max open_ms=<number> request_ms=<number> response_content=omitted cleanup=ok
 ```
 
+llama live test は、利用者が事前に起動した loopback server に対して、既存 codec による初回翻訳と semantic patch を一件ずつ実行します。protected placeholder、timeout、backend cleanup を検証し、close 後の health probe で llama-server が停止されていないことも確認します。server／model の download や起動は行いません。
+
+```sh
+BILINGUA_RUN_LIVE_LLAMA=1 \
+BILINGUA_LLAMA_SERVER_URL=http://127.0.0.1:8080 \
+BILINGUA_LLAMA_SERVER_MODEL=auto \
+sh scripts/test-live-llama.sh
+```
+
+成功時も model ID と response content は表示しません。
+
+```text
+LIVE_LLAMA_TEST passed open_ms=<number> initial_ms=<number> patch_ms=<number> model_id=omitted response_content=omitted cleanup=ok server_alive=yes
+```
+
+公開 Ex コマンド、双方向同期、status、active request の強制停止まで含む smoke test は、同じ固定の合成 plaintext だけを送信します。
+
+```sh
+BILINGUA_RUN_LIVE_LLAMA=1 \
+BILINGUA_LLAMA_SERVER_URL=http://127.0.0.1:8080 \
+BILINGUA_LLAMA_SERVER_MODEL=auto \
+sh scripts/test-live-llama-session.sh
+```
+
+```text
+LIVE_LLAMA_SESSION_TEST passed initial_ms=<number> source_sync_ms=<number> target_sync_ms=<number> cancel_ms=<number> model_id=omitted response_content=omitted protected_literals=ok status=ok cleanup=ok server_alive=yes
+```
+
 ### 開発用環境変数
 
 | 変数 | 用途 |
 |---|---|
 | `BILINGUA_RUN_LIVE_CODEX=1` | 実 Codex request への明示 opt-in |
+| `BILINGUA_RUN_LIVE_LLAMA=1` | 実 llama-server request への明示 opt-in |
+| `BILINGUA_LLAMA_SERVER_URL` | live test の loopback endpoint。既定 `http://127.0.0.1:8080` |
+| `BILINGUA_LLAMA_SERVER_MODEL` | live test の model ID。既定 `auto` |
 | `BILINGUA_NVIM` | live test で使う Neovim executable の絶対 path |
 | `BILINGUA_BENCHMARK_UNITS` | benchmark の unit 数 |
 | `BILINGUA_BENCHMARK_ITERATIONS` | benchmark の反復数 |
 | `BILINGUA_BENCHMARK_PAYLOAD_BYTES` | benchmark の unit payload size |
 
-CI は format／lint、Neovim 0.10.4／stable の test、allowed-failure の nightly test、週次／手動の最新 Codex schema check を実行します。
+CI は format／lint、Neovim 0.10.4／stable の test、allowed-failure の nightly test、週次／手動の最新 Codex schema check を実行します。外部 service／server に依存する live test は通常 CI から実行しません。
 
 ## Contributing
 
@@ -413,7 +506,7 @@ CI は format／lint、Neovim 0.10.4／stable の test、allowed-failure の nig
 
 | 種別 | 窓口 | 記載する情報 |
 |---|---|---|
-| バグ報告 | [GitHub Issues](https://github.com/popura/bilingua.nvim/issues) | Neovim／Codex version、再現手順、期待結果、実際の結果、正規化済み error code |
+| バグ報告 | [GitHub Issues](https://github.com/popura/bilingua.nvim/issues) | Neovim／選択 backend／Codex または llama.cpp version、再現手順、期待結果、実際の結果、正規化済み error code |
 | 使用方法の質問 | [GitHub Issues](https://github.com/popura/bilingua.nvim/issues) | title に `[Question]` を付け、利用目的、設定、実行 command、`:BilinguaStatus` の metadata |
 | 脆弱性報告 | `<要確認: 非公開の security advisory URL または連絡先>` | 影響範囲、再現条件、緩和策、連絡先 |
 
@@ -424,12 +517,14 @@ Issue は情報共有用です。maintainer は必要と判断した内容だけ
 ### セキュリティの要点
 
 - Bilingua.nvim は source／target を信頼境界外の document data として扱い、固定 instruction と JSON data を分離します。
-- strict isolation は backend instance ごとに空の一時 directory と permission profile を作り、workspace read access をその directory へ限定し、network を off、environments を空に設定します。
-- backend は ephemeral thread と instruction source を検証し、approval request を decline し、command／file change／Model Context Protocol（MCP）／web search／image view／subagent item を中断します。
+- Codex strict isolation は backend instance ごとに空の一時 directory と permission profile を作り、workspace read access をその directory へ限定し、network を off、environments を空に設定します。
+- Codex backend は ephemeral thread と instruction source を検証し、approval request を decline し、command／file change／Model Context Protocol（MCP）／web search／image view／subagent item を中断します。
 - model output は schema、task ID、revision、document structure、protected token、destination version の順で検証してから Editor adapter が適用します。
 - Codex home（`$CODEX_HOME`、既定 `~/.codex`）の user-level instruction file は利用者が内容を確認してください。
 - 認証情報には Codex CLI の公式認証または環境側の credential store を使い、設定例と報告には `<CODEX_CREDENTIAL>` を使ってください。
 - 追加の OS-level 保護が必要な環境では Codex app-server process を外部 sandbox へ収容してください。
+- llama backend は tool 定義を送らず、HTTP endpoint を loopback に限定します。Codex の permission profile は適用されないため、server process、model、chat template、model file の権限は利用者が保護してください。
+- local model へ渡す場合も文書の機密性を確認し、model license、server の log／cache、hardware resource を管理してください。
 
 詳細な信頼境界、privacy、resource cleanup は [`:help bilingua-security`](doc/bilingua.txt) を参照してください。
 

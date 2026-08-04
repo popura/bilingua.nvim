@@ -405,10 +405,11 @@ function Service:submit(task, callbacks)
       local correction = table.concat({
         "The previous response failed JSON format validation.",
         "Re-evaluate the original task and return only one object conforming to the response schema.",
+        "Include every required field; use an empty array for a required array field when it has no values.",
         "Do not add prose or code fences.",
       }, " ")
-      if type(request.system_instruction) == "string" then
-        request.system_instruction = request.system_instruction .. "\n" .. correction
+      if type(request.system_instructions) == "string" then
+        request.system_instructions = request.system_instructions .. "\n" .. correction
       elseif type(request.user_content) == "string" then
         request.user_content = correction .. "\n\n" .. request.user_content
       end

@@ -3,6 +3,8 @@ local json = require("bilingua.util.json")
 
 local M = {}
 
+local FORMAT_REPAIRABLE = { retryable_format = true }
+
 M.system_instructions = table.concat({
   "You are a constrained bilingual document synchronization engine.",
   "",
@@ -17,6 +19,10 @@ M.system_instructions = table.concat({
 
 function M.invalid(message, details, cause)
   return nil, errors.new(errors.codes.INVALID_OUTPUT, message, false, details, cause)
+end
+
+function M.invalid_format(message, cause)
+  return M.invalid(message, FORMAT_REPAIRABLE, cause)
 end
 
 function M.invalid_argument(message, details)
@@ -247,10 +253,13 @@ function M.normalized_request(codec, task, capabilities, instruction, document_d
   parts[#parts + 1] = instruction
   parts[#parts + 1] = "DOCUMENT_DATA\n" .. json.encode(document_data)
 
+  local include_schema_in_prompt = not backend.structured_output or backend.schema_in_prompt == true
   local response_schema
   if backend.structured_output then
     response_schema = schema
-  else
+  end
+
+  if include_schema_in_prompt then
     parts[#parts + 1] = "RESPONSE_SCHEMA\n" .. json.encode(schema)
     parts[#parts + 1] = "Return exactly one JSON object conforming to RESPONSE_SCHEMA."
   end
@@ -291,8 +300,6 @@ local function response_text(raw_response)
   end
   return nil
 end
-
-local FORMAT_REPAIRABLE = { retryable_format = true }
 
 function M.decode_json_object(raw_response, capabilities)
   local text = response_text(raw_response)

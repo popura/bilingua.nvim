@@ -102,6 +102,98 @@ local function isolated_permission_profile_name(path)
   return "bilingua_nvim_isolated_" .. suffix
 end
 
+local function configuration_error(message)
+  return backend_error(errors.codes.BACKEND_INIT, message, false)
+end
+
+local function validate_string_list(value, option_name)
+  if type(value) ~= "table" then
+    return configuration_error(
+      ("Codex backend option %s must be a string list"):format(option_name)
+    )
+  end
+  local count = 0
+  local maximum = 0
+  for key in pairs(value) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+      return configuration_error(
+        ("Codex backend option %s must be a string list"):format(option_name)
+      )
+    end
+    count = count + 1
+    maximum = math.max(maximum, key)
+  end
+  if count == 0 or maximum ~= count then
+    return configuration_error(
+      ("Codex backend option %s must be a non-empty string list"):format(option_name)
+    )
+  end
+  for index = 1, count do
+    if type(value[index]) ~= "string" or value[index] == "" then
+      return configuration_error(
+        ("Codex backend option %s must contain non-empty strings"):format(option_name)
+      )
+    end
+  end
+end
+
+local function validate_user_options(options)
+  if options.command ~= nil then
+    local command_error = validate_string_list(options.command, "command")
+    if command_error then
+      return command_error
+    end
+  end
+  for _, field in ipairs({ "model", "reasoning_effort" }) do
+    local value = options[field]
+    if value ~= nil and (type(value) ~= "string" or value == "") then
+      return configuration_error(
+        ("Codex backend option %s must be nil or a non-empty string"):format(field)
+      )
+    end
+  end
+  for _, field in ipairs({
+    "require_ephemeral",
+    "strict_isolation",
+    "reject_external_instruction_sources",
+    "include_platform_default_reads",
+    "experimental_api",
+  }) do
+    if options[field] ~= nil and type(options[field]) ~= "boolean" then
+      return configuration_error(("Codex backend option %s must be boolean"):format(field))
+    end
+  end
+  if
+    options.request_timeout_ms ~= nil
+    and (
+      type(options.request_timeout_ms) ~= "number"
+      or options.request_timeout_ms < 1
+      or options.request_timeout_ms % 1 ~= 0
+    )
+  then
+    return configuration_error("Codex backend option request_timeout_ms must be a positive integer")
+  end
+  if
+    options.shutdown_timeout_ms ~= nil
+    and (
+      type(options.shutdown_timeout_ms) ~= "number"
+      or options.shutdown_timeout_ms < 0
+      or options.shutdown_timeout_ms % 1 ~= 0
+    )
+  then
+    return configuration_error(
+      "Codex backend option shutdown_timeout_ms must be a non-negative integer"
+    )
+  end
+  local strict_isolation = options.strict_isolation ~= false
+  if strict_isolation and options.include_platform_default_reads == true then
+    return configuration_error("Strict isolation cannot include platform default readable roots")
+  end
+  if strict_isolation and options.experimental_api == false then
+    return configuration_error("Strict isolation requires the Codex experimental API")
+  end
+end
+
 function Backend.new(options)
   local resolved = options or {}
   local strict_isolation = resolved.strict_isolation ~= false
@@ -109,20 +201,7 @@ function Backend.new(options)
   local experimental_api = resolved.experimental_api ~= false
   local allowed_instruction_sources =
     copy_string_list(resolved.allowed_instruction_sources, "allowed_instruction_sources")
-  local configuration_error
-  if strict_isolation and include_platform_defaults then
-    configuration_error = backend_error(
-      errors.codes.BACKEND_INIT,
-      "Strict isolation cannot include platform default readable roots",
-      false
-    )
-  elseif strict_isolation and not experimental_api then
-    configuration_error = backend_error(
-      errors.codes.BACKEND_INIT,
-      "Strict isolation requires the Codex experimental API",
-      false
-    )
-  end
+  local user_configuration_error = validate_user_options(resolved)
   for _, dependency in ipairs({
     "schedule",
     "timer_factory",
@@ -138,7 +217,9 @@ function Backend.new(options)
   return setmetatable({
     api_version = 1,
     id = "codex_app_server",
-    command = copy_list(resolved.command or { "codex", "app-server" }),
+    command = copy_list(
+      type(resolved.command) == "table" and resolved.command or { "codex", "app-server" }
+    ),
     configured_model = resolved.model,
     reasoning_effort = resolved.reasoning_effort,
     require_ephemeral = resolved.require_ephemeral ~= false,
@@ -159,7 +240,7 @@ function Backend.new(options)
     logger = resolved.logger,
     ring_size = resolved.ring_size or 200,
     max_line_bytes = resolved.max_line_bytes or (16 * 1024 * 1024),
-    configuration_error = configuration_error,
+    configuration_error = user_configuration_error,
     state = "new",
     process = nil,
     parser = nil,
@@ -210,6 +291,7 @@ end
 function Backend:capabilities()
   return {
     structured_output = true,
+    schema_in_prompt = false,
     streaming = false,
     cancellation = true,
     system_instructions = true,

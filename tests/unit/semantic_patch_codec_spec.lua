@@ -68,7 +68,8 @@ end
 -- Preconditions: A valid semantic patch task is encoded for a backend that
 -- supports system instructions and structured output. Prerequisites: The
 -- response schema is sent directly to the provider rather than embedded as text.
--- Verification items: schema_version declares both its integer type and v1 const.
+-- Verification items: the Schema pins v1, task ID, destination, and a bounded list
+-- of edited unit IDs, while the prompt requires new AFTER content and exact IDs.
 test.it("encodes a provider-compatible structured semantic patch schema", function()
   local codec = patch_codec.new({ max_output_chars = 100, supported_kinds = { paragraph = true } })
   local request, encode_error = codec:encode(task(), {
@@ -79,6 +80,22 @@ test.it("encodes a provider-compatible structured semantic patch schema", functi
   test.eq(nil, encode_error)
   test.eq("integer", request.response_schema.properties.schema_version.type)
   test.eq(1, request.response_schema.properties.schema_version.const)
+  test.eq("task:patch:42", request.response_schema.properties.task_id.const)
+  test.eq("source", request.response_schema.properties.destination_side.const)
+  local correspondence_schema =
+    request.response_schema.properties.replacement_units.items.properties.corresponds_to_edited_unit_ids
+  test.eq(1, correspondence_schema.minItems)
+  test.eq(1, correspondence_schema.maxItems)
+  test.eq("tgt:u:15", correspondence_schema.items.enum[1])
+  test.eq(1, #correspondence_schema.items.enum)
+  test.eq(
+    true,
+    request.user_content:find("Translate content newly present in AFTER", 1, true) ~= nil
+  )
+  test.eq(
+    true,
+    request.user_content:find("Copy edited-side AFTER unit_id values exactly", 1, true) ~= nil
+  )
 end)
 
 -- Preconditions: A target-to-source task contains the baseline triple and a

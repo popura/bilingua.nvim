@@ -3,6 +3,7 @@ local markdown = require("bilingua.adapters.document.markdown")
 local hybrid = require("bilingua.adapters.tracker.hybrid")
 local generated_id = require("bilingua.adapters.aligner.generated_id")
 local codex_app_server = require("bilingua.adapters.translation.backends.codex_app_server")
+local llama_server = require("bilingua.adapters.translation.backends.llama_server")
 local initial_translation =
   require("bilingua.adapters.translation.codecs.initial_translation_json_v1")
 local semantic_patch = require("bilingua.adapters.translation.codecs.semantic_patch_json_v1")
@@ -37,6 +38,19 @@ local function codec_options(config)
     max_output_chars = config.limits.max_task_output_chars,
     timeout_ms = config.translation.timeout_ms,
   }
+end
+
+local function backend_options(config, context, backend_id)
+  local options = copy_table((config.translation.backends or {})[backend_id] or {})
+  options.timeout_ms = config.translation.timeout_ms
+  options.ring_size = config.debug.ring_size
+
+  for key, value in pairs((context and context.backend_runtime) or {}) do
+    if options[key] == nil then
+      options[key] = value
+    end
+  end
+  return options
 end
 
 local function markdown_adapter(config, context)
@@ -112,15 +126,14 @@ function M.register(registry)
       "translation_backend",
       "codex_app_server",
       function(config, context)
-        local options = copy_table(config.translation.backend_options)
-        options.timeout_ms = config.translation.timeout_ms
-        options.ring_size = config.debug.ring_size
-        for key, value in pairs((context and context.backend_runtime) or {}) do
-          if options[key] == nil then
-            options[key] = value
-          end
-        end
-        return codex_app_server.new(options)
+        return codex_app_server.new(backend_options(config, context, "codex_app_server"))
+      end,
+    },
+    {
+      "translation_backend",
+      "llama_server",
+      function(config, context)
+        return llama_server.new(backend_options(config, context, "llama_server"))
       end,
     },
     {

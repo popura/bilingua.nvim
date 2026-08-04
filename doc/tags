@@ -45,6 +45,7 @@ bilingua-development	bilingua.txt	/*bilingua-development*
 bilingua-documents	bilingua.txt	/*bilingua-documents*
 bilingua-errors	bilingua.txt	/*bilingua-errors*
 bilingua-events	bilingua.txt	/*bilingua-events*
+bilingua-llama-server	bilingua.txt	/*bilingua-llama-server*
 bilingua-mappings	bilingua.txt	/*bilingua-mappings*
 bilingua-markdown	bilingua.txt	/*bilingua-markdown*
 bilingua-non-persistence	bilingua.txt	/*bilingua-non-persistence*
@@ -57,4 +58,6 @@ bilingua-security	bilingua.txt	/*bilingua-security*
 bilingua-setup	bilingua.txt	/*bilingua-setup*
 bilingua-status	bilingua.txt	/*bilingua-status*
 bilingua-synchronization	bilingua.txt	/*bilingua-synchronization*
+bilingua-translation-backend-options	bilingua.txt	/*bilingua-translation-backend-options*
+bilingua-translation-backends	bilingua.txt	/*bilingua-translation-backends*
 bilingua.txt	bilingua.txt	/*bilingua.txt*

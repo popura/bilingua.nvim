@@ -191,7 +191,7 @@ function InitialTranslationJsonV1:decode(raw_response, task, backend_capabilitie
     "Initial translation response"
   )
   if not fields_ok then
-    return common.invalid(fields_error)
+    return common.invalid_format(fields_error)
   end
   if
     value.schema_version ~= 1
@@ -227,7 +227,7 @@ function InitialTranslationJsonV1:decode(raw_response, task, backend_capabilitie
       ("Initial translation %d"):format(ordinal)
     )
     if not translation_ok then
-      return common.invalid(translation_error)
+      return common.invalid_format(translation_error)
     end
     if
       type(translation.source_unit_id) ~= "string"

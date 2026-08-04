@@ -21,6 +21,7 @@ local function harness(extra)
   local pending = {}
   local timers = {}
   local removed = {}
+  local runtime_calls = { tempdir = 0 }
   local server = fake_server.new()
   local function schedule(callback)
     pending[#pending + 1] = callback
@@ -56,6 +57,7 @@ local function harness(extra)
       return server:process_factory(command, process_options, on_exit)
     end,
     tempdir_factory = function()
+      runtime_calls.tempdir = runtime_calls.tempdir + 1
       return "/tmp/bilingua-isolated-test"
     end,
     remove_tree = function(path)
@@ -75,8 +77,57 @@ local function harness(extra)
     flush = flush,
     timers = timers,
     removed = removed,
+    runtime_calls = runtime_calls,
   }
 end
+
+-- Preconditions: Each construction receives all required runtime functions but
+-- one malformed user-owned Codex option, including both isolation contradictions.
+-- Prerequisites: user configuration errors are stored by the constructor and are
+-- delivered asynchronously by open as E_BACKEND_INIT; only missing injected runtime
+-- dependencies remain programmer errors that may throw.
+-- Verification items: every case constructs without throwing, open fails once with
+-- E_BACKEND_INIT, and no process, timer, or temporary directory is created.
+test.it("rejects malformed Codex options before acquiring runtime resources", function()
+  local cases = {
+    { command = "codex app-server" },
+    { command = {} },
+    { command = { [2] = "codex" } },
+    { command = { "codex", "" } },
+    { model = "" },
+    { reasoning_effort = 1 },
+    { require_ephemeral = "yes" },
+    { strict_isolation = "yes" },
+    { reject_external_instruction_sources = "yes" },
+    { include_platform_default_reads = "yes" },
+    { experimental_api = "yes" },
+    { request_timeout_ms = 0 },
+    { request_timeout_ms = 1.5 },
+    { shutdown_timeout_ms = -1 },
+    { shutdown_timeout_ms = 0.5 },
+    { strict_isolation = true, include_platform_default_reads = true },
+    { strict_isolation = true, experimental_api = false },
+  }
+
+  for _, options in ipairs(cases) do
+    local constructed, context = pcall(harness, options)
+    test.eq(true, constructed)
+    local opened, open_error, callbacks
+    context.backend:open(function(ok, err)
+      opened = ok
+      open_error = err
+      callbacks = (callbacks or 0) + 1
+    end)
+    context.flush()
+
+    test.eq(nil, opened)
+    test.eq("E_BACKEND_INIT", open_error.code)
+    test.eq(1, callbacks)
+    test.eq(nil, context.server.command)
+    test.eq(0, #context.timers)
+    test.eq(0, context.runtime_calls.tempdir)
+  end
+end)
 
 local function open_ready(context)
   local opened, open_error
@@ -143,7 +194,8 @@ end
 -- default text model, with the first response split across arbitrary chunks.
 -- Prerequisites: open owns JSON-RPC request IDs, initialized notification, and
 -- model discovery. Verification items: command/cwd isolation, handshake fields,
--- model selection, structured-output capability, and deferred single completion.
+-- model selection, structured output without prompt Schema duplication, and one
+-- deferred completion.
 test.it("opens through the app-server handshake and selects a text model", function()
   local context = harness()
   local callbacks = 0
@@ -181,6 +233,7 @@ test.it("opens through the app-server handshake and selects a text model", funct
   test.eq(1, callbacks)
   test.eq("default-model", context.backend:selected_model())
   test.eq(true, context.backend:capabilities().structured_output)
+  test.eq(false, context.backend:capabilities().schema_in_prompt)
   test.eq(true, context.backend:capabilities().ephemeral_sessions)
 end)
 

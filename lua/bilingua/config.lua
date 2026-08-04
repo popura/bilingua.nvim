@@ -78,18 +78,32 @@ local DEFAULTS = {
     initial_codec = "initial_translation_json_v1",
     patch_codec = "semantic_patch_json_v1",
     timeout_ms = 120000,
-    backend_options = {
-      command = { "codex", "app-server" },
-      model = "gpt-5.6-luna",
-      reasoning_effort = "max",
-      require_ephemeral = true,
-      strict_isolation = true,
-      reject_external_instruction_sources = true,
-      include_platform_default_reads = false,
-      experimental_api = true,
-      request_timeout_ms = 10000,
-      shutdown_timeout_ms = 500,
+    backends = {
+      codex_app_server = {
+        command = { "codex", "app-server" },
+        model = "gpt-5.6-luna",
+        reasoning_effort = "max",
+        require_ephemeral = true,
+        strict_isolation = true,
+        reject_external_instruction_sources = true,
+        include_platform_default_reads = false,
+        experimental_api = true,
+        request_timeout_ms = 10000,
+        shutdown_timeout_ms = 500,
+      },
+      llama_server = {
+        endpoint = "http://127.0.0.1:8080",
+        model = "auto",
+        curl_command = { "curl" },
+        open_timeout_ms = 30000,
+        health_poll_interval_ms = 250,
+        request_timeout_ms = 0,
+        structured_output = "json_schema",
+        disable_thinking = true,
+        max_response_bytes = 16 * 1024 * 1024,
+      },
     },
+    backend_options = {},
   },
   ui = {
     signs = true,
@@ -107,8 +121,13 @@ local DEFAULTS = {
 local DYNAMIC_TABLES = {
   ["documents.routes"] = true,
   ["documents.aliases"] = true,
+  ["translation.backends"] = true,
   ["translation.backend_options"] = true,
 }
+
+local function is_dynamic_table(path)
+  return DYNAMIC_TABLES[path] == true or path:match("^translation%.backends%.[^.]+$") ~= nil
+end
 
 local ATOMIC_TABLES = {
   ["documents.protected_patterns"] = true,
@@ -130,11 +149,48 @@ local function deep_copy(value, seen)
   return copy
 end
 
+local function deep_merge(destination, source)
+  for key, value in pairs(source or {}) do
+    if
+      type(value) == "table"
+      and type(destination[key]) == "table"
+      and value[1] == nil
+      and destination[key][1] == nil
+    then
+      deep_merge(destination[key], value)
+    else
+      destination[key] = deep_copy(value)
+    end
+  end
+  return destination
+end
+
+local function effective_backend_options(config)
+  local translation = type(config) == "table" and config.translation or nil
+  if
+    type(translation) ~= "table"
+    or type(translation.backend) ~= "string"
+    or type(translation.backends) ~= "table"
+    or type(translation.backend_options) ~= "table"
+  then
+    return
+  end
+  local selected = translation.backend
+  local selected_options = translation.backends[selected]
+  if selected_options ~= nil and type(selected_options) ~= "table" then
+    return
+  end
+  local effective = deep_copy(selected_options or {})
+  deep_merge(effective, translation.backend_options)
+  translation.backends[selected] = deep_copy(effective)
+  translation.backend_options = deep_copy(effective)
+end
+
 local function merge_known(destination, source, schema, path, warnings)
   for key, value in pairs(source) do
     local current_path = path == "" and tostring(key) or (path .. "." .. tostring(key))
     local expected = schema[key]
-    if expected == nil and not DYNAMIC_TABLES[path] then
+    if expected == nil and not is_dynamic_table(path) then
       warnings[#warnings + 1] = ("Unknown configuration key: %s"):format(current_path)
     elseif
       type(value) == "table"
@@ -418,60 +474,21 @@ local function validate(config)
   if not ok then
     return nil, err
   end
+  ok, err = require_type(config.translation.backends, "table", "translation.backends")
+  if not ok then
+    return nil, err
+  end
+  for backend_id, options in pairs(config.translation.backends) do
+    if type(backend_id) ~= "string" or backend_id == "" then
+      return invalid("translation.backends keys must be non-empty strings")
+    end
+    if type(options) ~= "table" then
+      return invalid(("translation.backends.%s must be a table"):format(backend_id))
+    end
+  end
   ok, err = require_type(config.translation.backend_options, "table", "translation.backend_options")
   if not ok then
     return nil, err
-  end
-  local backend_options = config.translation.backend_options
-  if type(backend_options.command) ~= "table" or #backend_options.command == 0 then
-    return invalid("translation.backend_options.command must be a non-empty string list")
-  end
-  for _, part in ipairs(backend_options.command) do
-    if type(part) ~= "string" or part == "" then
-      return invalid("translation.backend_options.command must contain non-empty strings")
-    end
-  end
-  for _, field in ipairs({
-    "require_ephemeral",
-    "strict_isolation",
-    "reject_external_instruction_sources",
-    "include_platform_default_reads",
-    "experimental_api",
-  }) do
-    ok, err = require_boolean(backend_options[field], "translation.backend_options." .. field)
-    if not ok then
-      return nil, err
-    end
-  end
-  for _, field in ipairs({ "model", "reasoning_effort" }) do
-    local value = backend_options[field]
-    if value ~= nil and (type(value) ~= "string" or value == "") then
-      return invalid(
-        ("translation.backend_options.%s must be nil or a non-empty string"):format(field)
-      )
-    end
-  end
-  ok, err = positive_integer(
-    backend_options.request_timeout_ms,
-    "translation.backend_options.request_timeout_ms"
-  )
-  if not ok then
-    return nil, err
-  end
-  ok, err = non_negative_integer(
-    backend_options.shutdown_timeout_ms,
-    "translation.backend_options.shutdown_timeout_ms"
-  )
-  if not ok then
-    return nil, err
-  end
-  if backend_options.strict_isolation and backend_options.include_platform_default_reads then
-    return invalid("strict isolation cannot include platform default readable roots")
-  end
-  if backend_options.strict_isolation and not backend_options.experimental_api then
-    return invalid(
-      "translation.backend_options.experimental_api must be true when strict_isolation is true"
-    )
   end
 
   for _, field in ipairs({ "signs", "virtual_text", "notify_backend", "show_progress" }) do
@@ -505,6 +522,7 @@ function M.resolve(options)
   local resolved = deep_copy(DEFAULTS)
   local warnings = {}
   merge_known(resolved, options or {}, DEFAULTS, "", warnings)
+  effective_backend_options(resolved)
   local valid, validation_error = validate(resolved)
   if not valid then
     return nil, validation_error, warnings
@@ -513,7 +531,9 @@ function M.resolve(options)
 end
 
 function M.defaults()
-  return deep_copy(DEFAULTS)
+  local defaults = deep_copy(DEFAULTS)
+  effective_backend_options(defaults)
+  return defaults
 end
 
 return M

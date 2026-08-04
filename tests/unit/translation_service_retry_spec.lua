@@ -45,7 +45,7 @@ local function codec()
     api_version = 1,
     id = "retry_codec",
     encode = function(_, task)
-      return { request_id = task.task_id, system_instruction = "base", user_content = "document" }
+      return { request_id = task.task_id, system_instructions = "base", user_content = "document" }
     end,
     decode = function(_, raw, task)
       if raw == "malformed" then
@@ -150,8 +150,9 @@ end)
 -- Preconditions: A backend returns parseable transport data that the Codec marks
 -- as format-repairable invalid output on consecutive attempts. Prerequisites:
 -- model-output repair is allowed only once and must not include the prior payload.
--- Verification items: exactly one delayed retry is made, the second failure is
--- delivered as E_INVALID_OUTPUT, and request metadata contains no raw response.
+-- Verification items: exactly one delayed retry is made, its correction is appended
+-- once to system_instructions without changing document content or retaining the
+-- prior response, retry metadata names format repair, and failure remains terminal.
 test.it("retries format-repairable invalid output only once", function()
   local service, fake_backend, delays, flush = service_fixture()
   local received
@@ -175,7 +176,17 @@ test.it("retries format-repairable invalid output only once", function()
 
   test.eq(2, #fake_backend.requests)
   test.eq("E_INVALID_OUTPUT", received.code)
-  test.eq(nil, vim.inspect(fake_backend.requests[2].request):find("malformed", 1, true))
+  local retry_request = fake_backend.requests[2].request
+  local correction = table.concat({
+    "The previous response failed JSON format validation.",
+    "Re-evaluate the original task and return only one object conforming to the response schema.",
+    "Include every required field; use an empty array for a required array field when it has no values.",
+    "Do not add prose or code fences.",
+  }, " ")
+  test.eq("base\n" .. correction, retry_request.system_instructions)
+  test.eq("document", retry_request.user_content)
+  test.eq("format", retry_request.metadata.retry_reason)
+  test.eq(nil, vim.inspect(retry_request):find("malformed", 1, true))
 end)
 
 -- Preconditions: Codec validation detects a protected-placeholder mismatch.
