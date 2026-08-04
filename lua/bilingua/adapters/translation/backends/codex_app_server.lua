@@ -156,7 +156,6 @@ local function validate_user_options(options)
     "require_ephemeral",
     "strict_isolation",
     "reject_external_instruction_sources",
-    "include_platform_default_reads",
     "experimental_api",
   }) do
     if options[field] ~= nil and type(options[field]) ~= "boolean" then
@@ -186,9 +185,6 @@ local function validate_user_options(options)
     )
   end
   local strict_isolation = options.strict_isolation ~= false
-  if strict_isolation and options.include_platform_default_reads == true then
-    return configuration_error("Strict isolation cannot include platform default readable roots")
-  end
   if strict_isolation and options.experimental_api == false then
     return configuration_error("Strict isolation requires the Codex experimental API")
   end
@@ -197,7 +193,6 @@ end
 function Backend.new(options)
   local resolved = options or {}
   local strict_isolation = resolved.strict_isolation ~= false
-  local include_platform_defaults = resolved.include_platform_default_reads == true
   local experimental_api = resolved.experimental_api ~= false
   local allowed_instruction_sources =
     copy_string_list(resolved.allowed_instruction_sources, "allowed_instruction_sources")
@@ -226,7 +221,6 @@ function Backend.new(options)
     strict_isolation = strict_isolation,
     reject_external_instruction_sources = resolved.reject_external_instruction_sources ~= false,
     allowed_instruction_sources = allowed_instruction_sources,
-    include_platform_default_reads = include_platform_defaults,
     experimental_api = experimental_api,
     request_timeout_ms = resolved.request_timeout_ms or 10000,
     turn_timeout_ms = resolved.turn_timeout_ms or resolved.timeout_ms or 120000,

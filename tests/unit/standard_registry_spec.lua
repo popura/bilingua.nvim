@@ -83,14 +83,13 @@ test.it("registers and composes every standard extension exactly once", function
   test.eq(nil, repeated_error)
 end)
 
--- Preconditions: A resolved config has distinct nested Codex options, then its
--- compatibility mirror is deliberately changed before the factory is called.
+-- Preconditions: A resolved config has distinct backend-specific Codex options.
 -- Prerequisites: registry composition trusts translation.backends[backend_id],
 -- copies it per construction, adds global timeout/ring size, and injects only
 -- runtime fields not already supplied by the selected backend options.
--- Verification items: nested values beat the changed mirror, user runtime wins over
--- injection, no resource factory is called during construction, and mutation of one
--- backend instance cannot affect the next instance or source configuration.
+-- Verification items: the nested values reach the backend, user runtime wins over
+-- injection, no resource factory is called during construction, and one backend
+-- instance cannot mutate later instances.
 test.it("resolves isolated backend options from the backend-specific table", function()
   local registry = registry_module.new()
   assert(standard_registry.register(registry))
@@ -111,8 +110,6 @@ test.it("resolves isolated backend options from the backend-specific table", fun
     },
     debug = { ring_size = 37 },
   }))
-  config.translation.backend_options.command = { "changed-mirror" }
-  config.translation.backend_options.model = "changed-mirror-model"
 
   local resource_calls = 0
   local injected_schedule = function() end

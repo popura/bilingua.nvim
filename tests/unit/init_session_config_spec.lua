@@ -1,12 +1,12 @@
 local test = require("tests.testlib")
 
--- Preconditions: Global setup supplies two-part nested and legacy backend commands,
--- while one start call replaces every list with one element and clears patterns.
+-- Preconditions: Global setup supplies two-part backend-specific commands, while
+-- one start call replaces every list with one element and clears patterns.
 -- Prerequisites: public start resolves the same merged Session configuration used
 -- by Coordinator; map options merge recursively but array options replace atomically.
 -- Verification items: mapping installation receives exact nested Codex/llama lists,
--- both exact legacy mirror lists, the per-Session mapping and empty pattern list,
--- while the public callback remains a detached status snapshot.
+-- the per-Session mapping and empty pattern list, while the public callback remains
+-- a detached status snapshot.
 test.it("installs mappings from the resolved per-Session configuration", function()
   local saved = {
     bilingua = package.loaded["bilingua"],
@@ -51,10 +51,6 @@ test.it("installs mappings from the resolved per-Session configuration", functio
           codex_app_server = { command = { "global-codex", "--shared" } },
           llama_server = { curl_command = { "global-curl", "--shared" } },
         },
-        backend_options = {
-          command = { "global-legacy", "--shared" },
-          curl_command = { "global-legacy-curl", "--shared" },
-        },
       },
     }))
     assert(isolated.start({
@@ -64,10 +60,6 @@ test.it("installs mappings from the resolved per-Session configuration", functio
         backends = {
           codex_app_server = { command = { "session-codex" } },
           llama_server = { curl_command = { "session-curl" } },
-        },
-        backend_options = {
-          command = { "session-legacy" },
-          curl_command = { "session-legacy-curl" },
         },
       },
     }, function(status)
@@ -85,8 +77,6 @@ test.it("installs mappings from the resolved per-Session configuration", functio
   test.eq("zx", installed_config.mappings.sync)
   test.eq({ "session-codex" }, installed_config.translation.backends.codex_app_server.command)
   test.eq({ "session-curl" }, installed_config.translation.backends.llama_server.curl_command)
-  test.eq({ "session-legacy" }, installed_config.translation.backend_options.command)
-  test.eq({ "session-legacy-curl" }, installed_config.translation.backend_options.curl_command)
   test.eq({}, installed_config.documents.protected_patterns)
   test.eq("session:override", callback_status.session_id)
 end)

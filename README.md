@@ -260,7 +260,6 @@ require("bilingua").setup({
 })
 ```
 
-
 ### Local llama-server backend
 
 Bilingua.nvim には `codex_app_server` と `llama_server` の二つの標準 backend があります。既定は `codex_app_server` です。llama-server を使う場合、Bilingua.nvim は server や model を download／起動せず、利用者が外部で管理している process へ `curl` で接続します。
@@ -298,8 +297,6 @@ require("bilingua").setup({
 - `structured_output = "json_schema"` は Schema を llama.cpp の `response_format` と prompt の両方へ渡します。server または model が拒否する場合、`"prompt_only"` は API parameter を省略して Schema を prompt だけへ含めます。
 - `disable_thinking = true` は既定値です。`reasoning_effort = "none"` と `chat_template_kwargs.enable_thinking = false` を request に加えます。実際の挙動は model の chat template にも依存します。
 - `:BilinguaStop` と `:BilinguaStop!` は active curl request と timer を解放しますが、利用者所有の llama-server process は停止しません。
-
-`translation.backend_options` は旧設定との互換用です。選択中 backend の `translation.backends.<id>` に重ねられ、同じ key では `backend_options` の値が優先されます。新しい設定では backend 間の混入を避けるため `translation.backends.codex_app_server` または `translation.backends.llama_server` を使用してください。
 
 構造化出力は OpenAI-compatible な nested 形式 `response_format.json_schema.schema` を使用します。2026-08-04 時点の [llama.cpp server source](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/server-common.cpp) と [GBNF guide](https://github.com/ggml-org/llama.cpp/blob/master/grammars/README.md) を照合し、実際の loopback server でも確認しています。llama.cpp の更新で API や chat template の挙動が変わる可能性があります。
 

@@ -86,7 +86,6 @@ local DEFAULTS = {
         require_ephemeral = true,
         strict_isolation = true,
         reject_external_instruction_sources = true,
-        include_platform_default_reads = false,
         experimental_api = true,
         request_timeout_ms = 10000,
         shutdown_timeout_ms = 500,
@@ -103,7 +102,6 @@ local DEFAULTS = {
         max_response_bytes = 16 * 1024 * 1024,
       },
     },
-    backend_options = {},
   },
   ui = {
     signs = true,
@@ -122,7 +120,6 @@ local DYNAMIC_TABLES = {
   ["documents.routes"] = true,
   ["documents.aliases"] = true,
   ["translation.backends"] = true,
-  ["translation.backend_options"] = true,
 }
 
 local function is_dynamic_table(path)
@@ -147,43 +144,6 @@ local function deep_copy(value, seen)
     copy[deep_copy(key, visited)] = deep_copy(item, visited)
   end
   return copy
-end
-
-local function deep_merge(destination, source)
-  for key, value in pairs(source or {}) do
-    if
-      type(value) == "table"
-      and type(destination[key]) == "table"
-      and value[1] == nil
-      and destination[key][1] == nil
-    then
-      deep_merge(destination[key], value)
-    else
-      destination[key] = deep_copy(value)
-    end
-  end
-  return destination
-end
-
-local function effective_backend_options(config)
-  local translation = type(config) == "table" and config.translation or nil
-  if
-    type(translation) ~= "table"
-    or type(translation.backend) ~= "string"
-    or type(translation.backends) ~= "table"
-    or type(translation.backend_options) ~= "table"
-  then
-    return
-  end
-  local selected = translation.backend
-  local selected_options = translation.backends[selected]
-  if selected_options ~= nil and type(selected_options) ~= "table" then
-    return
-  end
-  local effective = deep_copy(selected_options or {})
-  deep_merge(effective, translation.backend_options)
-  translation.backends[selected] = deep_copy(effective)
-  translation.backend_options = deep_copy(effective)
 end
 
 local function merge_known(destination, source, schema, path, warnings)
@@ -486,11 +446,6 @@ local function validate(config)
       return invalid(("translation.backends.%s must be a table"):format(backend_id))
     end
   end
-  ok, err = require_type(config.translation.backend_options, "table", "translation.backend_options")
-  if not ok then
-    return nil, err
-  end
-
   for _, field in ipairs({ "signs", "virtual_text", "notify_backend", "show_progress" }) do
     ok, err = require_boolean(config.ui[field], "ui." .. field)
     if not ok then
@@ -522,7 +477,6 @@ function M.resolve(options)
   local resolved = deep_copy(DEFAULTS)
   local warnings = {}
   merge_known(resolved, options or {}, DEFAULTS, "", warnings)
-  effective_backend_options(resolved)
   local valid, validation_error = validate(resolved)
   if not valid then
     return nil, validation_error, warnings
@@ -531,9 +485,7 @@ function M.resolve(options)
 end
 
 function M.defaults()
-  local defaults = deep_copy(DEFAULTS)
-  effective_backend_options(defaults)
-  return defaults
+  return deep_copy(DEFAULTS)
 end
 
 return M

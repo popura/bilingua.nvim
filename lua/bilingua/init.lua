@@ -36,8 +36,6 @@ local ATOMIC_CONFIG_TABLES = {
   ["documents.protected_patterns"] = true,
   ["translation.backends.codex_app_server.command"] = true,
   ["translation.backends.llama_server.curl_command"] = true,
-  ["translation.backend_options.command"] = true,
-  ["translation.backend_options.curl_command"] = true,
 }
 
 local function deep_merge(destination, source, path)

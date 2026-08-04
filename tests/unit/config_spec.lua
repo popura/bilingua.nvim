@@ -14,7 +14,7 @@ test.it("resolves isolated defaults and rejects persistent sessions", function()
   test.eq(700, first.sync.debounce_ms)
   test.eq(false, first.layout.open_folds)
   test.eq("codex_app_server", first.translation.backend)
-  test.eq(true, first.translation.backend_options.experimental_api)
+  test.eq(true, first.translation.backends.codex_app_server.experimental_api)
   first.sync.debounce_ms = 1
 
   local second = assert(config.resolve({}))
@@ -33,8 +33,8 @@ end)
 test.it("pins the default Codex model and effort for live verification", function()
   local resolved = assert(config.resolve({}))
 
-  test.eq("gpt-5.6-luna", resolved.translation.backend_options.model)
-  test.eq("max", resolved.translation.backend_options.reasoning_effort)
+  test.eq("gpt-5.6-luna", resolved.translation.backends.codex_app_server.model)
+  test.eq("max", resolved.translation.backends.codex_app_server.reasoning_effort)
 end)
 
 -- Preconditions: Strict isolation is requested while the Codex experimental API
@@ -44,16 +44,18 @@ end)
 test.it("defers Codex option semantics to the selected backend", function()
   local resolved, resolve_error = config.resolve({
     translation = {
-      backend_options = {
-        strict_isolation = true,
-        experimental_api = false,
+      backends = {
+        codex_app_server = {
+          strict_isolation = true,
+          experimental_api = false,
+        },
       },
     },
   })
 
   test.eq(nil, resolve_error)
-  test.eq(true, resolved.translation.backend_options.strict_isolation)
-  test.eq(false, resolved.translation.backend_options.experimental_api)
+  test.eq(true, resolved.translation.backends.codex_app_server.strict_isolation)
+  test.eq(false, resolved.translation.backends.codex_app_server.experimental_api)
 end)
 
 -- Preconditions: Callers provide wrong primitive types or out-of-range values for
@@ -110,14 +112,18 @@ end)
 -- Verification items: both replacements survive exactly without inherited elements.
 test.it("replaces command arrays without retaining default elements", function()
   local resolved = assert(config.resolve({
-    translation = { backend_options = { command = { "custom-server" } } },
+    translation = {
+      backends = { codex_app_server = { command = { "custom-server" } } },
+    },
   }))
-  test.eq({ "custom-server" }, resolved.translation.backend_options.command)
+  test.eq({ "custom-server" }, resolved.translation.backends.codex_app_server.command)
 
   local empty = assert(config.resolve({
-    translation = { backend_options = { command = {} } },
+    translation = {
+      backends = { codex_app_server = { command = {} } },
+    },
   }))
-  test.eq({}, empty.translation.backend_options.command)
+  test.eq({}, empty.translation.backends.codex_app_server.command)
 end)
 
 -- Preconditions: A caller supplies one valid custom Lua pattern, while separate

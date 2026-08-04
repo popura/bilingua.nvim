@@ -2,17 +2,16 @@ local test = require("tests.testlib")
 local config = require("bilingua.config")
 
 -- Preconditions: Defaults are requested once, then llama_server is selected with
--- nested options and explicit legacy backend_options that override the same model.
--- Prerequisites: resolution order is built-in defaults, selected nested options,
--- then legacy options; backend_options remains only a compatibility mirror.
+-- backend-specific endpoint, model, and command overrides.
+-- Prerequisites: every backend owns one option table below translation.backends;
+-- selecting one backend must not create a second flat view of those options.
 -- Verification items: Codex remains the default with its pinned model, llama keeps
--- its own defaults and overrides, legacy wins last, both resolved tables match,
--- and Codex-only command and isolation fields do not enter llama options.
-test.it("resolves and mirrors options for only the selected backend", function()
+-- its own defaults and overrides, and Codex-only command and isolation fields do
+-- not enter llama options.
+test.it("resolves options only from backend-specific tables", function()
   local defaults = config.defaults()
   test.eq("codex_app_server", defaults.translation.backend)
   test.eq("gpt-5.6-luna", defaults.translation.backends.codex_app_server.model)
-  test.eq("gpt-5.6-luna", defaults.translation.backend_options.model)
   test.eq("http://127.0.0.1:8080", defaults.translation.backends.llama_server.endpoint)
 
   local resolved = assert(config.resolve({
@@ -22,21 +21,17 @@ test.it("resolves and mirrors options for only the selected backend", function()
         llama_server = {
           endpoint = "http://localhost:8080",
           model = "nested-model",
+          curl_command = { "custom-curl" },
         },
-      },
-      backend_options = {
-        model = "legacy-model",
-        curl_command = { "custom-curl" },
       },
     },
   }))
 
   local nested = resolved.translation.backends.llama_server
   test.eq("http://localhost:8080", nested.endpoint)
-  test.eq("legacy-model", nested.model)
+  test.eq("nested-model", nested.model)
   test.eq({ "custom-curl" }, nested.curl_command)
   test.eq(30000, nested.open_timeout_ms)
-  test.eq(nested, resolved.translation.backend_options)
   test.eq(nil, nested.command)
   test.eq(nil, nested.strict_isolation)
 end)
@@ -45,8 +40,8 @@ end)
 -- built-in llama_server table; another selects a fully custom backend and options.
 -- Prerequisites: translation.backends is a dynamic registry-owned namespace, so
 -- config validates only its generic shape and does not own backend option names.
--- Verification items: both option sets survive unchanged, selected options are
--- mirrored, and neither supported extension path produces an unknown-key warning.
+-- Verification items: both option sets survive unchanged in their backend-specific
+-- tables, and neither supported extension path produces an unknown-key warning.
 test.it("preserves custom backend IDs and option keys without warnings", function()
   local llama, llama_error, llama_warnings = config.resolve({
     translation = {
@@ -60,7 +55,7 @@ test.it("preserves custom backend IDs and option keys without warnings", functio
   })
   test.eq(nil, llama_error)
   test.eq({}, llama_warnings)
-  test.eq(true, llama.translation.backend_options.provider_extension.enabled)
+  test.eq(true, llama.translation.backends.llama_server.provider_extension.enabled)
 
   local custom, custom_error, custom_warnings = config.resolve({
     translation = {
@@ -75,16 +70,16 @@ test.it("preserves custom backend IDs and option keys without warnings", functio
   })
   test.eq(nil, custom_error)
   test.eq({}, custom_warnings)
-  test.eq("retained", custom.translation.backend_options.arbitrary_option)
+  test.eq("retained", custom.translation.backends.custom_backend.arbitrary_option)
   test.eq({ "custom" }, custom.translation.backends.custom_backend.command)
 end)
 
 -- Preconditions: A source configuration is resolved twice and defaults are read
--- twice; the first values and both views of its selected options are then mutated.
--- Prerequisites: config resolution deep-copies caller data, defaults, arrays, nested
--- option maps, and the legacy mirror for every Session.
--- Verification items: source input and later results retain original values, while
--- mutating backend_options does not mutate the selected nested option table.
+-- twice; the first resolved backend table and first defaults are then mutated.
+-- Prerequisites: config resolution deep-copies caller data, defaults, arrays, and
+-- nested option maps for every Session.
+-- Verification items: source input and later results retain their original nested
+-- command and extension values without relying on a duplicate option table.
 test.it("isolates backend option tables across every resolution boundary", function()
   local source = {
     translation = {
@@ -98,33 +93,51 @@ test.it("isolates backend option tables across every resolution boundary", funct
     },
   }
   local first = assert(config.resolve(source))
-  first.translation.backend_options.curl_command[1] = "mirror-change"
-  first.translation.backend_options.provider_extension.mode = "mirror-change"
+  first.translation.backends.llama_server.curl_command[1] = "resolved-change"
+  first.translation.backends.llama_server.provider_extension.mode = "resolved-change"
 
-  test.eq("source-curl", first.translation.backends.llama_server.curl_command[1])
-  test.eq("source", first.translation.backends.llama_server.provider_extension.mode)
   test.eq("source-curl", source.translation.backends.llama_server.curl_command[1])
   test.eq("source", source.translation.backends.llama_server.provider_extension.mode)
 
   local second = assert(config.resolve(source))
-  test.eq("source-curl", second.translation.backend_options.curl_command[1])
-  test.eq("source", second.translation.backend_options.provider_extension.mode)
+  test.eq("source-curl", second.translation.backends.llama_server.curl_command[1])
+  test.eq("source", second.translation.backends.llama_server.provider_extension.mode)
 
   local first_defaults = config.defaults()
   first_defaults.translation.backends.codex_app_server.command[1] = "changed"
-  first_defaults.translation.backend_options.command[1] = "mirror-changed"
   first_defaults.translation.backends.llama_server.curl_command[1] = "changed-curl"
 
   local second_defaults = config.defaults()
   test.eq({ "codex", "app-server" }, second_defaults.translation.backends.codex_app_server.command)
-  test.eq({ "codex", "app-server" }, second_defaults.translation.backend_options.command)
   test.eq({ "curl" }, second_defaults.translation.backends.llama_server.curl_command)
+end)
+
+-- Preconditions: A caller supplies the removed translation.backend_options key
+-- together with a valid backend-specific model value.
+-- Prerequisites: unknown configuration keys are reported and ignored; removed
+-- settings must not override or reappear in the resolved configuration.
+-- Verification items: the current nested model remains effective, backend_options
+-- is absent, and the caller receives the exact unknown-key warning.
+test.it("does not recognize the removed backend_options setting", function()
+  local resolved, resolve_error, warnings = config.resolve({
+    translation = {
+      backends = {
+        codex_app_server = { model = "current-model" },
+      },
+      backend_options = { model = "removed-model" },
+    },
+  })
+
+  test.eq(nil, resolve_error)
+  test.eq("current-model", resolved.translation.backends.codex_app_server.model)
+  test.eq(nil, resolved.translation.backend_options)
+  test.eq({ "Unknown configuration key: translation.backend_options" }, warnings)
 end)
 
 -- Preconditions: Callers provide malformed containers, backend IDs, or option
 -- tables while leaving all unrelated configuration valid.
 -- Prerequisites: config.lua owns only backend namespace shape, selected ID shape,
--- compatibility mirror shape, and the global translation timeout.
+-- and the global translation timeout.
 -- Verification items: every malformed shape returns E_INVALID_ARGUMENT and names
 -- the generic configuration path without applying Codex or llama field rules.
 test.it("validates only generic backend configuration shapes", function()
@@ -140,7 +153,6 @@ test.it("validates only generic backend configuration shapes", function()
       "translation.backends.llama_server",
     },
     { { translation = { backends = { [""] = {} } } }, "translation.backends keys" },
-    { { translation = { backend_options = "invalid" } }, "translation.backend_options" },
     { { translation = { timeout_ms = 0 } }, "translation.timeout_ms" },
   }
 

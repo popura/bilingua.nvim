@@ -545,7 +545,7 @@ invalid
 - Lua 5.1構文だけを使用する。
 - 公開拡張インターフェースに`api_version`を持たせる。
 - 未知のバックエンド通知や追加フィールドは、セキュリティ上問題がない限り無視できるようにする。
-- 実験的なCodex APIを標準動作に必須としてはならない。必須になった場合は機能検出と明示的なオプトインを行う。
+- `strict_isolation=true`ではCodexのpermission profile APIを必須とする。利用できない場合は明示的に失敗させ、制約の弱い設定へ切り替えない。
 
 
 ---
@@ -1420,17 +1420,18 @@ require("bilingua").setup({
     initial_codec = "initial_translation_json_v1",
     patch_codec = "semantic_patch_json_v1",
     timeout_ms = 120000,
-    backend_options = {
-      command = { "codex", "app-server" },
-      model = nil,              -- nilならmodel/listのisDefault
-      reasoning_effort = nil,   -- nilならモデル既定値
-      require_ephemeral = true,
-      strict_isolation = true,
-      reject_external_instruction_sources = true,
-      include_platform_default_reads = false,
-      experimental_api = false,
-      request_timeout_ms = 10000,
-      shutdown_timeout_ms = 500,
+    backends = {
+      codex_app_server = {
+        command = { "codex", "app-server" },
+        model = "gpt-5.6-luna",
+        reasoning_effort = "max",
+        require_ephemeral = true,
+        strict_isolation = true,
+        reject_external_instruction_sources = true,
+        experimental_api = true,
+        request_timeout_ms = 10000,
+        shutdown_timeout_ms = 500,
+      },
     },
   },
 
@@ -2449,9 +2450,9 @@ local process = vim.system(command, {
 
 `approvalPolicy="never"`は、対話的承認を要求しない方針であり、ツールやコマンド実行機能そのものを無効化する指定ではない。したがって、標準バックエンドは次の多層防御を用いる。
 
-1. `turn/start`でread-onlyかつrestricted read accessを明示し、読み取り可能なrootを上記の空ディレクトリだけに限定する。
-2. `strict_isolation=true`ではplatform default read accessを追加しない。
-3. `thread/start`の`instructionSources`を検査し、許可した一時ディレクトリ外の命令ファイルが読み込まれていれば、文書内容を送る前に開始を失敗させる。
+1. `thread/start`でread-only permission profileを明示し、読み取り可能なworkspace rootを上記の空ディレクトリだけに限定する。
+2. `strict_isolation=true`ではnetworkとenvironment accessを無効にする。
+3. `thread/start`の`instructionSources`を検査し、許可範囲外の命令ファイルが読み込まれていれば、文書内容を送る前に開始を失敗させる。
 4. command、file change、MCP、web search等のitemを検出した場合はturnを中断し、同期結果を破棄する。
 5. 承認要求、permission request、MCP elicitationはすべて拒否する。
 
@@ -2510,7 +2511,7 @@ end
       "version": "0.1.0"
     },
     "capabilities": {
-      "experimentalApi": false,
+      "experimentalApi": true,
       "optOutNotificationMethods": [
         "item/agentMessage/delta"
       ]
@@ -2544,7 +2545,22 @@ end
     "model": "<selected-model>",
     "cwd": "<isolated-temp-dir>",
     "approvalPolicy": "never",
-    "sandbox": "readOnly",
+    "permissions": "bilingua_nvim_isolated_<suffix>",
+    "runtimeWorkspaceRoots": ["<isolated-temp-dir>"],
+    "environments": [],
+    "config": {
+      "permissions.bilingua_nvim_isolated_<suffix>": {
+        "description": "Bilingua.nvim isolated read-only translation workspace",
+        "filesystem": {
+          ":workspace_roots": {
+            ".": "read"
+          }
+        },
+        "network": {
+          "enabled": false
+        }
+      }
+    },
     "serviceName": "bilingua_nvim"
   }
 }
@@ -2558,14 +2574,14 @@ end
 
 非ephemeral threadへ自動フォールバックしてはならない。
 
-`thread/start` responseに含まれる`instructionSources`は、開始時に読み込まれた命令ファイルの絶対パスである。`reject_external_instruction_sources=true`では、配列が空であるか、すべてのパスが正規化後に`isolated_temp_dir`配下であることを確認する。次の場合は、**文書本文を含む`turn/start`を送る前に**`E_BACKEND_INSTRUCTION_SOURCE`で失敗する。
+`thread/start` responseに含まれる`instructionSources`は、開始時に読み込まれた命令ファイルの絶対パスである。`reject_external_instruction_sources=true`では、各pathが正規化後に`isolated_temp_dir`配下にあるか、Bilingua初期化時に検出したCodex user-levelの`AGENTS.override.md`または`AGENTS.md`と完全一致することを確認する。次の場合は、**文書本文を含む`turn/start`を送る前に**`E_BACKEND_INSTRUCTION_SOURCE`で失敗する。
 
-- 一時ディレクトリ外のpathが一つでも含まれる。
+- 一時ディレクトリ配下でも許可済みuser-level fileでもないpathが一つでも含まれる。
 - pathの正規化に失敗する。
-- symlink解決後の実体pathが一時ディレクトリ外になる。
+- symlink解決後の実体pathが許可範囲外になる。
 - 厳格設定であるにもかかわらず、利用中のCodexバージョンでは命令sourceを確認できない。
 
-この検査は、利用者またはプロジェクトの`AGENTS.md`等が翻訳タスクへ混入することを防ぐために行う。
+この検査は、未確認の利用者設定またはプロジェクトの`AGENTS.md`等が翻訳タスクへ混入することを防ぐために行う。許可済みuser-level fileは完全一致したpathだけを認め、その配下の別fileを許可しない。
 
 ### 19.9 turn開始
 
@@ -2585,14 +2601,6 @@ thread確認後に`turn/start`を送る。
     ],
     "cwd": "<isolated-temp-dir>",
     "approvalPolicy": "never",
-    "sandboxPolicy": {
-      "type": "readOnly",
-      "access": {
-        "type": "restricted",
-        "includePlatformDefaults": false,
-        "readableRoots": ["<isolated-temp-dir>"]
-      }
-    },
     "model": "<selected-model>",
     "outputSchema": {
       "type": "object"
@@ -2601,9 +2609,7 @@ thread確認後に`turn/start`を送る。
 }
 ```
 
-`includePlatformDefaults`は`include_platform_default_reads`設定から決定する。`strict_isolation=true`では必ずfalseとし、trueへの設定上書きを拒否する。
-
-管理ポリシーによりrestricted read accessが拒否された場合、workspace write、full read access、danger full accessへ緩和してはならない。安全なread-only設定が使用不能なら`E_BACKEND_INIT`または`E_TRANSLATION`とする。`approvalPolicy="never"`はsandbox enforcementの代替ではない。
+管理ポリシーによりpermission profileが拒否された場合、workspace write、full read access、danger full accessへ緩和してはならない。安全なread-only設定が使用不能なら`E_BACKEND_INIT`または`E_TRANSLATION`とする。`approvalPolicy="never"`はsandbox enforcementの代替ではない。
 
 ### 19.10 結果収集
 
@@ -2726,7 +2732,7 @@ Neovim終了時は待機せず、可能な範囲で直ちにkillする。
 codex app-server generate-json-schema --out ./schemas
 ```
 
-標準バックエンドは安定APIだけを利用し、未知の追加notificationを許容する。必須フィールドが変更された場合はCodex backendだけを修正し、TranslationServicePortより内側へ変更を広げない。
+標準バックエンドが送るfieldは、対応対象Codexの生成schemaまたは能力照会で確認する。未知の追加notificationは許容する。必須フィールドが変更された場合はCodex backendだけを修正し、TranslationServicePortより内側へ変更を広げない。
 
 ---
 
@@ -2784,7 +2790,7 @@ OpenAI互換形式であっても、接続先、サポートSchema、streaming�
 - 推論providerへ要求を送るためのバックエンド自身の通信を除き、agent起点の任意ネットワークアクセス、MCP、web search、image view、subagent等は翻訳タスクに不要な能力として扱い、利用を要求または許容しない。
 - command、file change、tool call等が観測された要求は失敗させ、その出力を適用しない。
 
-ただし、Codex app-serverの`approvalPolicy="never"`はツール無効化指定ではなく、モデルがsandbox内でコマンドを試みる可能性を単独では排除しない。予防的な境界はrestricted read-only sandboxと外部の実行分離であり、event検出やprompt上の禁止文は追加防御である。OSレベルの完全なprocess-execution禁止が必要な場合は、利用者または配布環境がapp-serverプロセスを適切な外部sandboxへ収容する。
+ただし、Codex app-serverの`approvalPolicy="never"`はツール無効化指定ではなく、モデルがsandbox内でコマンドを試みる可能性を単独では排除しない。予防的な境界はread-onlyのfilesystem権限と外部の実行分離であり、event検出やprompt上の禁止文は追加防御である。OSレベルの完全なprocess-execution禁止が必要な場合は、利用者または配布環境がapp-serverプロセスを適切な外部sandboxへ収容する。
 
 バックエンドから返された内容は、常に未検証の候補として扱う。`TranslationResult`を受け取っただけで、直ちにバッファへ適用してはならない。SyncEngine、Document Adapter、Editor Adapterによる検証をすべて通過してから適用する。
 
@@ -3559,8 +3565,8 @@ Neovimを`--headless -u NONE`で起動し、次を検証する。
 - [ ] ephemeral threadをtaskごとに使用する。
 - [ ] output schemaを指定する。
 - [ ] 原文file/pathをCodexのcwdまたはreadable rootへ含めない。
-- [ ] restricted read-only sandboxと空の一時cwdを使用し、strict modeではplatform default read accessを追加しない。
-- [ ] external `instructionSources`を文書送信前に拒否する。
+- [ ] strict modeではread-only permission profileと空の一時cwdを使用し、network accessと追加environmentを無効にする。
+- [ ] 許可範囲外の`instructionSources`を文書送信前に拒否する。
 - [ ] command/file/tool itemを検出した要求を中断し、その出力を適用しない。
 - [ ] `approvalPolicy="never"`をtool-disable機能として誤認しない。
 - [ ] approval requestをdeclineする。
@@ -3719,15 +3725,11 @@ resource cleanup stress test
 
 live Codex testはsecretを必要とするため、通常のpull request CIでは実行しない。
 
-### 29.6 リリース互換性
+### 29.6 リリース変更
 
-public API、設定名、port contractを変更する場合はSemantic Versioningに従う。
+リリース間の後方互換性は保証しない。public API、設定名、port contractを変更する場合、旧APIのalias、旧設定の変換、互換用mirrorを実装へ残してはならない。変更後のAPI、設定、contractだけをcode、test、README、Vim helpへ記載する。
 
-- patch: bug fix、内部変更。
-- minor: 後方互換のadapter、設定、capability追加。
-- major: public API、port signature、設定意味の非互換変更。
-
-各Portに`api_version`を持たせ、Registry登録時に互換性を検証する。
+各Portに`api_version`を持たせ、Registry登録時に現行contractとの一致を検証する。
 
 ---
 
@@ -4092,8 +4094,10 @@ require("bilingua").setup({
     backend = "codex_app_server",
     initial_codec = "initial_translation_json_v1",
     patch_codec = "semantic_patch_json_v1",
-    backend_options = {
-      command = { "codex", "app-server" },
+    backends = {
+      codex_app_server = {
+        command = { "codex", "app-server" },
+      },
     },
   },
 

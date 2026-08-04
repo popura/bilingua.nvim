@@ -311,7 +311,6 @@ mappings.enabled=false で既定 mapping をすべて無効にできます。各
           require_ephemeral = true,
           strict_isolation = true,
           reject_external_instruction_sources = true,
-          include_platform_default_reads = false,
           experimental_api = true,
           request_timeout_ms = 10000,
           shutdown_timeout_ms = 500,
@@ -328,7 +327,6 @@ mappings.enabled=false で既定 mapping をすべて無効にできます。各
           max_response_bytes = 16 * 1024 * 1024,
         },
       },
-      backend_options = {},
     },
 
     ui = {
@@ -472,10 +470,6 @@ translation.backends.codex_app_server.reject_external_instruction_sources
 	cwd 内、または Bilingua 初期化時に検出した Codex user-level
 	AGENTS.override.md／AGENTS.md と realpath で同一の file だけを許可し、
 	それ以外を拒否します。
-translation.backends.codex_app_server.include_platform_default_reads
-	旧設定との互換性のための option。true は strict_isolation=true と
-	同時には指定できません。非 strict mode の標準 readOnly sandbox を
-	狭めるものではありません。
 translation.backends.codex_app_server.experimental_api
 	initialize capability の experimentalApi。既定 true。
 	strict_isolation=true では permission profile API に必要なため、false と
@@ -484,13 +478,6 @@ translation.backends.codex_app_server.request_timeout_ms
 	initialize/model/thread/turn start RPC の timeout。
 translation.backends.codex_app_server.shutdown_timeout_ms
 	backend shutdown 後に process を強制終了するまでの待機時間。
-
-translation.backend_options
-        旧設定との互換用 overlay。選択中の translation.backends.<id> に
-        deep-merge され、同じ key では backend_options が優先されます。
-        command list は要素 merge せず list 全体を置き換えます。新規設定では
-        backend 間の option 混入を避けるため backend 別 table を使用して
-        ください。resolved config では選択 backend の互換 mirror になります。
 
                                 *bilingua-llama-server*
 llama-server prerequisites ~
@@ -619,9 +606,8 @@ debug.ring_size
 	backend stderr の in-memory ring buffer 最大件数。正の整数。
 
 setup() は型・値域を検証します。未知の key は typo 検出のため警告します。
-documents.routes、documents.aliases、translation.backends、
-translation.backend_options は
-extension 用の動的 key を受け入れます。
+documents.routes、documents.aliases、translation.backends は extension 用の
+動的 key を受け入れます。
 
 ==============================================================================
 7. Document handling					*bilingua-documents*

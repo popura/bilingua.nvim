@@ -99,13 +99,11 @@ test.it("rejects malformed Codex options before acquiring runtime resources", fu
     { require_ephemeral = "yes" },
     { strict_isolation = "yes" },
     { reject_external_instruction_sources = "yes" },
-    { include_platform_default_reads = "yes" },
     { experimental_api = "yes" },
     { request_timeout_ms = 0 },
     { request_timeout_ms = 1.5 },
     { shutdown_timeout_ms = -1 },
     { shutdown_timeout_ms = 0.5 },
-    { strict_isolation = true, include_platform_default_reads = true },
     { strict_isolation = true, experimental_api = false },
   }
 
