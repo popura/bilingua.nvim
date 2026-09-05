@@ -68,8 +68,8 @@ setup() は省略できます。省略時も既定設定で command が使えま
 全項目は |bilingua-configuration| を参照してください。
 
 source として使用できるのは、非空の file path を持つ loaded、modifiable、
-non-binary の通常 buffer です。未保存の無名 buffer、特殊 buftype、read-only
-buffer は E_INVALID_SOURCE_BUFFER です。
+non-binary の通常 buffer です。未保存の無名 buffer、特殊 buftype、
+modifiable=false の buffer は E_INVALID_SOURCE_BUFFER です。
 
 ==============================================================================
 3. Quick start					*bilingua-quick-start*
@@ -111,8 +111,10 @@ file として保存されません。
 
 							*:BilinguaSync*
 :BilinguaSync
-	cursor 下の mapping group を即時同期します。source 側なら target へ、
-	target 側なら source へ同期します。
+	cursor 下の mapping group を即時同期します。同期方向は baseline から
+	変更された側に従い、source の変更は target へ、target の変更は source
+	へ反映します。conflict の解決には |:BilinguaUseSource| または
+	|:BilinguaUseJapanese| を使います。
 
 							*:BilinguaSyncAll*
 :BilinguaSyncAll
@@ -163,6 +165,7 @@ file として保存されません。
 	source-only edit は source buffer 自体に残るため、終了時の翻訳 task は
 	作りません。
 
+							*:BilinguaStop!*
 :BilinguaStop!
 	active task を cancel し、未同期 target edit と conflict を破棄して
 	Session を force stop します。source へ適用済みの edit は戻しません。

@@ -105,10 +105,10 @@ test.it("synchronizes the mapping group under the current cursor", function()
 end)
 
 -- Preconditions: A Session has one clean and one dirty group plus an active job.
--- Prerequisites: public diagnostics must contain identifiers and counters but no
--- source path is included while document content and mutable internals are omitted.
--- document fragments or mutable internal tables. Verification items: all minimum
--- fields are present and mutating one returned snapshot cannot alter the next one.
+-- Prerequisites: public diagnostics include identifiers, counters, and the source
+-- path, but no document fragments or mutable internal tables. Verification items:
+-- all minimum fields are present, and mutating one returned snapshot cannot alter
+-- the next one.
 test.it("returns a detached status snapshot without document content", function()
   local active = ready_session()
   active.active_jobs["task:1"] = {}
