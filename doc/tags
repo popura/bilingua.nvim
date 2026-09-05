@@ -6,6 +6,7 @@
 :BilinguaStart	bilingua.txt	/*:BilinguaStart*
 :BilinguaStatus	bilingua.txt	/*:BilinguaStatus*
 :BilinguaStop	bilingua.txt	/*:BilinguaStop*
+:BilinguaStop!	bilingua.txt	/*:BilinguaStop!*
 :BilinguaSync	bilingua.txt	/*:BilinguaSync*
 :BilinguaSyncAll	bilingua.txt	/*:BilinguaSyncAll*
 :BilinguaToggle	bilingua.txt	/*:BilinguaToggle*
